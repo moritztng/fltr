@@ -1,12 +1,6 @@
 use core::slice::from_raw_parts;
 use memmap2::{MmapOptions, MmapRaw};
-use std::{
-    collections::VecDeque,
-    error::Error,
-    fs::File,
-    io::Write,
-    time::Instant,
-};
+use std::{collections::VecDeque, error::Error, fs::File, io::Write, time::Instant};
 use tokenizers::tokenizer::Tokenizer;
 
 const vocab_size: usize = 32000;
@@ -104,11 +98,7 @@ fn dequantize(out: &mut [f32], x: &QuantizedTensor) {
     }
 }
 
-fn matmul(
-    out: &mut [f32],
-    a: &QuantizedTensor,
-    b: &QuantizedTensor,
-) {
+fn matmul(out: &mut [f32], a: &QuantizedTensor, b: &QuantizedTensor) {
     for ((out_x, a_row), a_row_scales) in out
         .iter_mut()
         .zip(a.values.chunks_exact(b.values.len()))
@@ -171,64 +161,83 @@ impl Model {
         self.state
             .copy_from_slice(&self.weights.embeddings[token * dim..(token + 1) * dim]);
 
-        for l in 0..n_layers {
-            rmsnorm(
-                &mut self.buffer.state,
-                &self.state,
-                &self.weights.layers[l].rms_attention,
-            );
+        for ((weights, layer_key_cache), layer_value_cache) in self
+            .weights
+            .layers
+            .iter()
+            .zip(self.cache.key.chunks_exact_mut(state_size * kv_dim))
+            .zip(self.cache.value.chunks_exact_mut(state_size * kv_dim))
+        {
+            rmsnorm(&mut self.buffer.state, &self.state, weights.rms_attention);
 
             quantize(&mut self.buffer.qstate, &self.buffer.state);
             let mut qstate_tensor = self.buffer.qstate.to_tensor();
 
-            matmul(
-                &mut self.buffer.query,
-                &self.weights.layers[l].query,
-                &qstate_tensor,
-            );
-            let offset = l * state_size * kv_dim + pos * kv_dim;
-            matmul(
-                &mut self.cache.key[offset..offset + kv_dim],
-                &self.weights.layers[l].key,
-                &qstate_tensor,
-            );
-            matmul(
-                &mut self.cache.value[offset..offset + kv_dim],
-                &self.weights.layers[l].value,
-                &qstate_tensor,
-            );
-
-            for i in (0..dim).step_by(2) {
-                let head_i = i % head_size;
-                let frequency = 1f32 / 10000f32.powf(head_i as f32 / head_size as f32);
-                let value = pos as f32 * frequency;
-                let fcr = value.cos();
-                let fci = value.sin();
-                let mut tmp = [self.buffer.query[i], self.buffer.query[i + 1]];
-                self.buffer.query[i] = tmp[0] * fcr - tmp[1] * fci;
-                self.buffer.query[i + 1] = tmp[0] * fci + tmp[1] * fcr;
-                tmp.copy_from_slice(&self.cache.key[offset + i..offset + i + 2]);
-                self.cache.key[offset + i] = tmp[0] * fcr - tmp[1] * fci;
-                self.cache.key[offset + i + 1] = tmp[0] * fci + tmp[1] * fcr;
+            matmul(&mut self.buffer.query, &weights.query, &qstate_tensor);
+            let offset = pos * kv_dim;
+            let key_cache = &mut layer_key_cache[offset..offset + kv_dim];
+            let value_cache = &mut layer_value_cache[offset..offset + kv_dim];
+            matmul(key_cache, &weights.key, &qstate_tensor);
+            matmul(value_cache, &weights.value, &qstate_tensor);
+            for (query_head, key_head) in self
+                .buffer
+                .query
+                .chunks_exact_mut(head_size)
+                .zip(key_cache.chunks_exact_mut(head_size))
+            {
+                for (i, (query_pair, key_pair)) in query_head
+                    .chunks_exact_mut(2)
+                    .zip(key_head.chunks_exact_mut(2))
+                    .enumerate()
+                {
+                    let frequency = 1f32 / 10000f32.powf((i * 2) as f32 / head_size as f32);
+                    let value = pos as f32 * frequency;
+                    let fcr = value.cos();
+                    let fci = value.sin();
+                    query_pair.copy_from_slice(&[
+                        query_pair[0] * fcr - query_pair[1] * fci,
+                        query_pair[0] * fci + query_pair[1] * fcr,
+                    ]);
+                    key_pair.copy_from_slice(&[
+                        key_pair[0] * fcr - key_pair[1] * fci,
+                        key_pair[0] * fci + key_pair[1] * fcr,
+                    ]);
+                }
             }
 
             self.buffer.state.fill(0f32);
-            for h in 0..n_heads {
-                self.buffer.attention.fill(0f32);
-                for p in 0..=pos {
-                    for k in 0..head_size {
-                        self.buffer.attention[p] += self.cache.key
-                            [l * state_size * kv_dim + p * kv_dim + h * head_size + k]
-                            * self.buffer.query[h * head_size + k];
+            for (h, (state_head, query_head)) in self
+                .buffer
+                .state
+                .chunks_exact_mut(head_size)
+                .zip(self.buffer.query.chunks_exact(head_size))
+                .enumerate()
+            {
+                let offset = h * head_size;
+                for (attention_x, pos_key_cache) in self.buffer.attention[0..=pos]
+                    .iter_mut()
+                    .zip(layer_key_cache.chunks_exact(kv_dim))
+                {
+                    let mut x = 0f32;
+                    for (query_x, key_x) in query_head
+                        .iter()
+                        .zip(pos_key_cache[offset..offset + head_size].iter())
+                    {
+                        x += query_x * key_x
                     }
+                    *attention_x = x;
                 }
                 smul(&mut self.buffer.attention, 1f32 / (head_size as f32).sqrt());
                 softmax(&mut self.buffer.attention[..=pos]);
-                for p in 0..=pos {
-                    for i in 0..head_size {
-                        self.buffer.state[h * head_size + i] += self.buffer.attention[p]
-                            * &self.cache.value
-                                [l * state_size * kv_dim + p * kv_dim + h * head_size + i]
+                for (attention_x, pos_value_cache) in self.buffer.attention[0..=pos]
+                    .iter()
+                    .zip(layer_value_cache.chunks_exact(kv_dim))
+                {
+                    for (state_x, value_x) in state_head
+                        .iter_mut()
+                        .zip(pos_value_cache[offset..offset + head_size].iter())
+                    {
+                        *state_x += *attention_x * *value_x;
                     }
                 }
             }
@@ -236,7 +245,7 @@ impl Model {
             quantize(&mut self.buffer.qstate, &self.buffer.state);
             matmul(
                 &mut self.buffer.state,
-                &self.weights.layers[l].heads,
+                &weights.heads,
                 &self.buffer.qstate.to_tensor(),
             );
             add(&mut self.state, &self.buffer.state);
@@ -244,33 +253,28 @@ impl Model {
             rmsnorm(
                 &mut self.buffer.state,
                 &self.state,
-                &self.weights.layers[l].rms_feedforward,
+                &weights.rms_feedforward,
             );
 
             quantize(&mut self.buffer.qstate, &self.buffer.state);
             qstate_tensor = self.buffer.qstate.to_tensor();
-            matmul(
-                &mut self.buffer.ff_hidden,
-                &self.weights.layers[l].ff1,
-                &qstate_tensor,
-            );
+            matmul(&mut self.buffer.ff_hidden, &weights.ff1, &qstate_tensor);
 
-            matmul(
-                &mut self.buffer.swiglu,
-                &self.weights.layers[l].swiglu,
-                &qstate_tensor,
-            );
-            for i in 0..hidden_dim {
-                let mut x = self.buffer.ff_hidden[i];
-                x *= 1f32 / (1f32 + (-x).exp());
-                x *= self.buffer.swiglu[i];
-                self.buffer.ff_hidden[i] = x;
+            matmul(&mut self.buffer.swiglu, &weights.swiglu, &qstate_tensor);
+            for (hidden_x, swiglu_x) in self
+                .buffer
+                .ff_hidden
+                .iter_mut()
+                .zip(self.buffer.swiglu.iter())
+            {
+                *hidden_x *= 1f32 / (1f32 + (-*hidden_x).exp());
+                *hidden_x *= swiglu_x;
             }
 
             quantize(&mut self.buffer.qhidden, &self.buffer.ff_hidden);
             matmul(
                 &mut self.buffer.state,
-                &self.weights.layers[l].ff2,
+                &weights.ff2,
                 &self.buffer.qhidden.to_tensor(),
             );
             add(&mut self.state, &self.buffer.state);
