@@ -1,19 +1,18 @@
 use core::slice::from_raw_parts;
 use memmap2::{MmapOptions, MmapRaw};
-use std::{collections::VecDeque, error::Error, fs::File, io::Write, time::Instant};
+use std::{error::Error, fs::File, io::Write, time::Instant};
 use tokenizers::tokenizer::Tokenizer;
 
 const vocab_size: usize = 32000;
-const state_size: usize = 256;
-const n_layers: usize = 6;
-const n_kv_heads: usize = 6;
-const n_heads: usize = 6;
-const head_size: usize = 48;
-const hidden_dim: usize = 768;
+const state_size: usize = 2048;
+const n_layers: usize = 32;
+const n_kv_heads: usize = 32;
+const n_heads: usize = 32;
+const head_size: usize = 128;
+const hidden_dim: usize = 11008;
 const dim: usize = head_size * n_heads;
 const kv_dim: usize = head_size * n_kv_heads;
-const q_group_size: usize = 32;
-
+const q_group_size: usize = 64;
 struct Quantized<A, B> {
     values: A,
     scales: B,
@@ -25,6 +24,19 @@ impl QuantizedBuffer {
         QuantizedTensor {
             values: &self.values,
             scales: &self.scales,
+        }
+    }
+}
+
+impl QuantizedTensor<'_> {
+    fn from_ptr<const A: usize>(ptr: &mut *const u8) -> QuantizedTensor<'static> {
+        unsafe {
+            let tensor = QuantizedTensor {
+                values: from_raw_parts(*ptr as *const i8, A),
+                scales: from_raw_parts(ptr.add(A) as *const f32, A / q_group_size),
+            };
+            *ptr = ptr.add(A + 4 * (A / q_group_size));
+            tensor
         }
     }
 }
@@ -43,9 +55,9 @@ struct Layer {
 
 struct Weights {
     embeddings: Vec<f32>,
-    qembeddings: QuantizedTensor<'static>,
     layers: Vec<Layer>,
     rms_final: &'static [f32],
+    output: QuantizedTensor<'static>,
 }
 
 struct Cache {
@@ -285,27 +297,18 @@ impl Model {
         quantize(&mut self.buffer.qstate, &self.buffer.state);
         matmul(
             out,
-            &self.weights.qembeddings,
+            &self.weights.output,
             &self.buffer.qstate.to_tensor(),
         )
     }
 }
 
-fn init_quantized_tensors<const N: usize, const S: usize>(
-    data: &mut *const i8,
-) -> VecDeque<QuantizedTensor<'static>> {
-    let mut tensors = VecDeque::new();
-    for _ in 0..N {
-        tensors.push_back(unsafe {
-            let tensor = QuantizedTensor {
-                values: from_raw_parts(*data, S),
-                scales: from_raw_parts(data.add(S) as *const f32, S / q_group_size),
-            };
-            *data = data.add(S + 4 * (S / q_group_size));
-            tensor
-        });
+fn ptr_to_slice<const A: usize>(ptr: &mut *const u8) -> &'static [f32] {
+    unsafe {
+        let slice = from_raw_parts(*ptr as *const f32, A);
+        *ptr = ptr.add(4 * A);
+        slice
     }
-    tensors
 }
 
 pub fn generate(
@@ -314,50 +317,35 @@ pub fn generate(
     steps: usize,
     print: bool,
 ) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let mmap: MmapRaw = MmapOptions::new()
-        .offset(256)
-        .map_raw_read_only(&File::open(weights_pth)?)?;
-    let mut weights_ptr = mmap.as_ptr() as *const i8;
-    let mut weights_ptr_f = weights_ptr as *const f32;
-
-    let (rms_attention, rms_feedforward, rms_final) = unsafe {
-        let rms_attention = from_raw_parts(weights_ptr_f, n_layers * dim);
-        weights_ptr_f = weights_ptr_f.add(n_layers * dim);
-        let rms_feedforward = from_raw_parts(weights_ptr_f, n_layers * dim);
-        weights_ptr_f = weights_ptr_f.add(n_layers * dim);
-        let rms_final = from_raw_parts(weights_ptr_f, dim);
-        weights_ptr_f = weights_ptr_f.add(dim);
-        (rms_attention, rms_feedforward, rms_final)
-    };
-
-    weights_ptr = weights_ptr_f as *const i8;
-    let qembeddings = init_quantized_tensors::<1, { vocab_size * dim }>(&mut weights_ptr)
-        .pop_back()
-        .unwrap();
+    let mmap: MmapRaw = MmapOptions::new().map_raw_read_only(&File::open(weights_pth)?)?;
+    let mut weights_ptr = mmap.as_ptr() as *const u8;
+    let rms_final = ptr_to_slice::<dim>(&mut weights_ptr);
+    let qembeddings = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
     let mut embeddings = vec![0f32; vocab_size * dim];
     dequantize(&mut embeddings, &qembeddings);
-    let mut query = init_quantized_tensors::<n_layers, { dim * dim }>(&mut weights_ptr);
-    let mut key =
-        init_quantized_tensors::<n_layers, { dim * n_kv_heads * head_size }>(&mut weights_ptr);
-    let mut value =
-        init_quantized_tensors::<n_layers, { dim * n_kv_heads * head_size }>(&mut weights_ptr);
-    let mut heads = init_quantized_tensors::<n_layers, { dim * dim }>(&mut weights_ptr);
-    let mut ff1 = init_quantized_tensors::<n_layers, { dim * hidden_dim }>(&mut weights_ptr);
-    let mut ff2 = init_quantized_tensors::<n_layers, { hidden_dim * dim }>(&mut weights_ptr);
-    let mut swiglu = init_quantized_tensors::<n_layers, { dim * hidden_dim }>(&mut weights_ptr);
-
+    let output = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
     let mut layers = Vec::new();
-    for l in 0..n_layers {
+    for _ in 0..32 {
+        let rms_attention = ptr_to_slice::<dim>(&mut weights_ptr);
+        let rms_feedforward = ptr_to_slice::<dim>(&mut weights_ptr);
+        let query = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
+        let key = QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
+        let value = QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
+        let heads = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
+        let ff1 = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
+        let ff2 = QuantizedTensor::from_ptr::<{ hidden_dim * dim }>(&mut weights_ptr);
+        let swiglu = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
+
         layers.push(Layer {
-            rms_attention: &rms_attention[l * dim..],
-            rms_feedforward: &rms_feedforward[l * dim..],
-            query: query.pop_front().unwrap(),
-            key: key.pop_front().unwrap(),
-            value: value.pop_front().unwrap(),
-            heads: heads.pop_front().unwrap(),
-            ff1: ff1.pop_front().unwrap(),
-            ff2: ff2.pop_front().unwrap(),
-            swiglu: swiglu.pop_front().unwrap(),
+            rms_attention,
+            rms_feedforward,
+            query,
+            key,
+            value,
+            heads,
+            ff1,
+            ff2,
+            swiglu,
         });
     }
 
@@ -384,9 +372,9 @@ pub fn generate(
         },
         weights: Weights {
             embeddings,
-            qembeddings,
             layers,
             rms_final,
+            output,
         },
     };
 
