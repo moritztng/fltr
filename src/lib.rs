@@ -1,5 +1,6 @@
 use core::slice::from_raw_parts;
 use memmap2::{MmapOptions, MmapRaw};
+use rayon::prelude::*;
 use std::{error::Error, fs::File, io::Write, time::Instant};
 use tokenizers::tokenizer::Tokenizer;
 
@@ -111,26 +112,25 @@ fn dequantize(out: &mut [f32], x: &QuantizedTensor) {
 }
 
 fn matmul(out: &mut [f32], a: &QuantizedTensor, b: &QuantizedTensor) {
-    for ((out_x, a_row), a_row_scales) in out
-        .iter_mut()
-        .zip(a.values.chunks_exact(b.values.len()))
-        .zip(a.scales.chunks_exact(b.values.len() / q_group_size))
-    {
-        let mut x = 0f32;
-        for (((a_row_group, b_group), a_row_scale), b_scale) in a_row
-            .chunks_exact(q_group_size)
-            .zip(b.values.chunks_exact(q_group_size))
-            .zip(a_row_scales.iter())
-            .zip(b.scales.iter())
-        {
-            let mut gx = 0i32;
-            for (a_row_x, b_x) in a_row_group.iter().zip(b_group.iter()) {
-                gx += *a_row_x as i32 * *b_x as i32;
+    out.par_iter_mut()
+        .zip_eq(a.values.par_chunks_exact(b.values.len()))
+        .zip_eq(a.scales.par_chunks_exact(b.values.len() / q_group_size))
+        .for_each(|((out_x, a_row), a_row_scales)| {
+            let mut x = 0f32;
+            for (((a_row_group, b_group), a_row_scale), b_scale) in a_row
+                .chunks_exact(q_group_size)
+                .zip(b.values.chunks_exact(q_group_size))
+                .zip(a_row_scales.iter())
+                .zip(b.scales.iter())
+            {
+                let mut gx = 0i32;
+                for (a_row_x, b_x) in a_row_group.iter().zip(b_group.iter()) {
+                    gx += *a_row_x as i32 * *b_x as i32;
+                }
+                x += gx as f32 * a_row_scale * b_scale;
             }
-            x += gx as f32 * a_row_scale * b_scale;
-        }
-        *out_x = x;
-    }
+            *out_x = x;
+        })
 }
 
 fn smul(matrix: &mut [f32], scalar: f32) {
@@ -295,11 +295,7 @@ impl Model {
         rmsnorm(&mut self.buffer.state, &self.state, &self.weights.rms_final);
 
         quantize(&mut self.buffer.qstate, &self.buffer.state);
-        matmul(
-            out,
-            &self.weights.output,
-            &self.buffer.qstate.to_tensor(),
-        )
+        matmul(out, &self.weights.output, &self.buffer.qstate.to_tensor())
     }
 }
 
