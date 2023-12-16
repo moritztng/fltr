@@ -9,6 +9,7 @@ edition = "2021"
 tokenizers = "0.15.0"
 memmap2 = "0.9.0"
 rayon = "1.8"
+clap = { version = "4.4.11", features = ["derive"] }
 
 [dev-dependencies]
 criterion = "0.3"
