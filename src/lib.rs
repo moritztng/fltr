@@ -76,11 +76,12 @@ struct Buffer {
     qhidden: QuantizedBuffer,
 }
 
-struct Model {
+pub struct Model {
     state: Vec<f32>,
     buffer: Buffer,
     cache: Cache,
     weights: Weights,
+    tokenizer: Tokenizer,
 }
 
 fn quantize(out: &mut QuantizedBuffer, x: &[f32]) {
@@ -168,10 +169,87 @@ fn rmsnorm(out: &mut [f32], x: &[f32], weights: &[f32]) {
     }
 }
 
+fn ptr_to_slice<const A: usize>(ptr: &mut *const u8) -> &'static [f32] {
+    unsafe {
+        let slice = from_raw_parts(*ptr as *const f32, A);
+        *ptr = ptr.add(4 * A);
+        slice
+    }
+}
+
 impl Model {
-    fn forward(&mut self, out: &mut [f32], token: usize, pos: usize) {
+    pub fn from_file(weights_pth: String) -> Model {
+        let mmap: MmapRaw = MmapOptions::new()
+            .map_raw_read_only(&File::open(weights_pth).unwrap())
+            .unwrap();
+        let mut weights_ptr = mmap.as_ptr() as *const u8;
+        let rms_final = ptr_to_slice::<dim>(&mut weights_ptr);
+        let qembeddings = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
+        let mut embeddings = vec![0f32; vocab_size * dim];
+        dequantize(&mut embeddings, &qembeddings);
+        let output = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
+        let mut layers = Vec::new();
+        for _ in 0..32 {
+            let rms_attention = ptr_to_slice::<dim>(&mut weights_ptr);
+            let rms_feedforward = ptr_to_slice::<dim>(&mut weights_ptr);
+            let query = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
+            let key =
+                QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
+            let value =
+                QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
+            let heads = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
+            let ff1 = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
+            let ff2 = QuantizedTensor::from_ptr::<{ hidden_dim * dim }>(&mut weights_ptr);
+            let swiglu = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
+
+            layers.push(Layer {
+                rms_attention,
+                rms_feedforward,
+                query,
+                key,
+                value,
+                heads,
+                ff1,
+                ff2,
+                swiglu,
+            });
+        }
+
+        Model {
+            state: vec![0f32; dim],
+            buffer: Buffer {
+                state: vec![0f32; dim],
+                qstate: QuantizedBuffer {
+                    values: vec![0i8; dim],
+                    scales: vec![0f32; dim / q_group_size],
+                },
+                query: vec![0f32; dim],
+                attention: vec![0f32; state_size],
+                swiglu: vec![0f32; hidden_dim],
+                ff_hidden: vec![0f32; hidden_dim],
+                qhidden: QuantizedBuffer {
+                    values: vec![0i8; hidden_dim],
+                    scales: vec![0f32; hidden_dim / q_group_size],
+                },
+            },
+            cache: Cache {
+                key: vec![0f32; n_layers * state_size * kv_dim],
+                value: vec![0f32; n_layers * state_size * kv_dim],
+            },
+            weights: Weights {
+                embeddings,
+                layers,
+                rms_final,
+                output,
+            },
+            tokenizer:  Tokenizer::from_file("tokenizer.json").unwrap(),
+        }
+    }
+
+    fn forward(&mut self, token: usize, pos: usize) {
         self.state
             .copy_from_slice(&self.weights.embeddings[token * dim..(token + 1) * dim]);
+
 
         for ((weights, layer_key_cache), layer_value_cache) in self
             .weights
@@ -295,122 +373,50 @@ impl Model {
         rmsnorm(&mut self.buffer.state, &self.state, &self.weights.rms_final);
 
         quantize(&mut self.buffer.qstate, &self.buffer.state);
-        matmul(out, &self.weights.output, &self.buffer.qstate.to_tensor())
-    }
-}
-
-fn ptr_to_slice<const A: usize>(ptr: &mut *const u8) -> &'static [f32] {
-    unsafe {
-        let slice = from_raw_parts(*ptr as *const f32, A);
-        *ptr = ptr.add(4 * A);
-        slice
-    }
-}
-
-pub fn generate(
-    weights_pth: String,
-    prompt: String,
-    steps: usize,
-    print: bool,
-) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let mmap: MmapRaw = MmapOptions::new().map_raw_read_only(&File::open(weights_pth)?)?;
-    let mut weights_ptr = mmap.as_ptr() as *const u8;
-    let rms_final = ptr_to_slice::<dim>(&mut weights_ptr);
-    let qembeddings = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
-    let mut embeddings = vec![0f32; vocab_size * dim];
-    dequantize(&mut embeddings, &qembeddings);
-    let output = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
-    let mut layers = Vec::new();
-    for _ in 0..32 {
-        let rms_attention = ptr_to_slice::<dim>(&mut weights_ptr);
-        let rms_feedforward = ptr_to_slice::<dim>(&mut weights_ptr);
-        let query = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
-        let key = QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
-        let value = QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
-        let heads = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
-        let ff1 = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
-        let ff2 = QuantizedTensor::from_ptr::<{ hidden_dim * dim }>(&mut weights_ptr);
-        let swiglu = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
-
-        layers.push(Layer {
-            rms_attention,
-            rms_feedforward,
-            query,
-            key,
-            value,
-            heads,
-            ff1,
-            ff2,
-            swiglu,
-        });
+        matmul(&mut self.buffer.state, &self.weights.output, &self.buffer.qstate.to_tensor())
     }
 
-    let mut model = Model {
-        state: vec![0f32; dim],
-        buffer: Buffer {
-            state: vec![0f32; dim],
-            qstate: QuantizedBuffer {
-                values: vec![0i8; dim],
-                scales: vec![0f32; dim / q_group_size],
-            },
-            query: vec![0f32; dim],
-            attention: vec![0f32; state_size],
-            swiglu: vec![0f32; hidden_dim],
-            ff_hidden: vec![0f32; hidden_dim],
-            qhidden: QuantizedBuffer {
-                values: vec![0i8; hidden_dim],
-                scales: vec![0f32; hidden_dim / q_group_size],
-            },
-        },
-        cache: Cache {
-            key: vec![0f32; n_layers * state_size * kv_dim],
-            value: vec![0f32; n_layers * state_size * kv_dim],
-        },
-        weights: Weights {
-            embeddings,
-            layers,
-            rms_final,
-            output,
-        },
-    };
-
-    let tokenizer = Tokenizer::from_file("tokenizer.json")?;
-    let mut tokens = tokenizer.encode(prompt, true)?.get_ids().to_vec();
-    let mut logits = vec![0f32; vocab_size];
-
-    let mut start = Instant::now();
-    for pos in 0..steps {
-        model.forward(&mut logits, tokens[pos] as usize, pos);
-
-        if print {
-            print!(
-                "{}",
-                tokenizer
-                    .id_to_token(tokens[pos] as u32)
-                    .ok_or("print token error")?
-                    .replace("▁", " ")
-            );
-            std::io::stdout().flush()?;
+    pub fn generate(
+        &mut self,
+        prompt: String,
+        steps: usize,
+        print: bool,
+    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+        let mut tokens = self.tokenizer.encode(prompt, true)?.get_ids().to_vec();
+        let mut start = Instant::now();
+        for pos in 0..steps {
+            self.forward(tokens[pos] as usize, pos);
+    
+            if print {
+                print!(
+                    "{}",
+                    self.tokenizer
+                        .id_to_token(tokens[pos] as u32)
+                        .ok_or("print token error")?
+                        .replace("▁", " ")
+                );
+                std::io::stdout().flush()?;
+            }
+    
+            if pos == tokens.len() - 1 {
+                let token = self.buffer.state
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
+                    .ok_or("max logits error")?
+                    .0;
+                tokens.push(token as u32);
+            }
+    
+            if pos == 0 {
+                start = Instant::now();
+            }
         }
-
-        if pos == tokens.len() - 1 {
-            let token = logits
-                .iter()
-                .enumerate()
-                .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
-                .ok_or("max logits error")?
-                .0;
-            tokens.push(token as u32);
-        }
-
-        if pos == 0 {
-            start = Instant::now();
-        }
+    
+        println!(
+            "tokens/sec: {}",
+            (steps - 1) as f32 / start.elapsed().as_secs_f32()
+        );
+        Ok(self.tokenizer.decode(&tokens, false)?)
     }
-
-    println!(
-        "tokens/sec: {}",
-        (steps - 1) as f32 / start.elapsed().as_secs_f32()
-    );
-    Ok(tokenizer.decode(&tokens, false)?)
 }
