@@ -74,6 +74,7 @@ struct Buffer {
     swiglu: Vec<f32>,
     ff_hidden: Vec<f32>,
     qhidden: QuantizedBuffer,
+    logits: Vec<f32>,
 }
 
 pub struct Model {
@@ -82,6 +83,7 @@ pub struct Model {
     cache: Cache,
     weights: Weights,
     tokenizer: Tokenizer,
+    mmap: MmapRaw,
 }
 
 fn quantize(out: &mut QuantizedBuffer, x: &[f32]) {
@@ -231,6 +233,7 @@ impl Model {
                     values: vec![0i8; hidden_dim],
                     scales: vec![0f32; hidden_dim / q_group_size],
                 },
+                logits: vec![0f32; vocab_size],
             },
             cache: Cache {
                 key: vec![0f32; n_layers * state_size * kv_dim],
@@ -242,14 +245,14 @@ impl Model {
                 rms_final,
                 output,
             },
-            tokenizer:  Tokenizer::from_file("tokenizer.json").unwrap(),
+            tokenizer: Tokenizer::from_file("tokenizer.json").unwrap(),
+            mmap: mmap,
         }
     }
 
     fn forward(&mut self, token: usize, pos: usize) {
         self.state
             .copy_from_slice(&self.weights.embeddings[token * dim..(token + 1) * dim]);
-
 
         for ((weights, layer_key_cache), layer_value_cache) in self
             .weights
@@ -373,7 +376,12 @@ impl Model {
         rmsnorm(&mut self.buffer.state, &self.state, &self.weights.rms_final);
 
         quantize(&mut self.buffer.qstate, &self.buffer.state);
-        matmul(&mut self.buffer.state, &self.weights.output, &self.buffer.qstate.to_tensor())
+
+        matmul(
+            &mut self.buffer.logits,
+            &self.weights.output,
+            &self.buffer.qstate.to_tensor(),
+        );
     }
 
     pub fn generate(
@@ -386,7 +394,6 @@ impl Model {
         let mut start = Instant::now();
         for pos in 0..steps {
             self.forward(tokens[pos] as usize, pos);
-    
             if print {
                 print!(
                     "{}",
@@ -397,9 +404,10 @@ impl Model {
                 );
                 std::io::stdout().flush()?;
             }
-    
             if pos == tokens.len() - 1 {
-                let token = self.buffer.state
+                let token = self
+                    .buffer
+                    .logits
                     .iter()
                     .enumerate()
                     .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
@@ -407,12 +415,10 @@ impl Model {
                     .0;
                 tokens.push(token as u32);
             }
-    
             if pos == 0 {
                 start = Instant::now();
             }
         }
-    
         println!(
             "tokens/sec: {}",
             (steps - 1) as f32 / start.elapsed().as_secs_f32()
