@@ -61,7 +61,7 @@ struct Weights {
     output: QuantizedTensor<'static>,
 }
 
-struct Cache {
+pub struct Cache {
     key: Vec<f32>,
     value: Vec<f32>,
 }
@@ -82,6 +82,7 @@ pub struct Model {
     buffer: Buffer,
     cache: Cache,
     weights: Weights,
+    position: usize,
     tokenizer: Tokenizer,
     mmap: MmapRaw,
 }
@@ -245,12 +246,14 @@ impl Model {
                 rms_final,
                 output,
             },
+            position: 0,
             tokenizer: Tokenizer::from_file("tokenizer.json").unwrap(),
             mmap: mmap,
         }
     }
 
-    fn forward(&mut self, token: usize, pos: usize) {
+    fn forward(&mut self, token: usize) {
+        let pos = self.position;
         self.state
             .copy_from_slice(&self.weights.embeddings[token * dim..(token + 1) * dim]);
 
@@ -389,22 +392,31 @@ impl Model {
         prompt: String,
         steps: usize,
         print: bool,
+        cache: Option<(usize, &Cache)>,
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
         let mut tokens = self.tokenizer.encode(prompt, true)?.get_ids().to_vec();
+        let prompt_len = tokens.len();
+        if let Some((position, cache)) = cache {
+            self.position = position;
+            self.cache.key.copy_from_slice(&cache.key);
+            self.cache.value.copy_from_slice(&cache.value);
+        } else {
+            self.position = 0;
+        }
         let mut start = Instant::now();
-        for pos in 0..steps {
-            self.forward(tokens[pos] as usize, pos);
+        for i in 0..(prompt_len + steps) {
+            self.forward(tokens[i] as usize);
             if print {
                 print!(
                     "{}",
                     self.tokenizer
-                        .id_to_token(tokens[pos] as u32)
+                        .id_to_token(tokens[i] as u32)
                         .ok_or("print token error")?
                         .replace("▁", " ")
                 );
                 std::io::stdout().flush()?;
             }
-            if pos == tokens.len() - 1 {
+            if i == tokens.len() - 1 {
                 let token = self
                     .buffer
                     .logits
@@ -415,14 +427,28 @@ impl Model {
                     .0;
                 tokens.push(token as u32);
             }
-            if pos == 0 {
+            if i == 0 {
                 start = Instant::now();
             }
+            self.position += 1;
         }
-        println!(
-            "tokens/sec: {}",
-            (steps - 1) as f32 / start.elapsed().as_secs_f32()
-        );
-        Ok(self.tokenizer.decode(&tokens, false)?)
+        if print {
+            println!(
+                "tokens/sec: {}",
+                (tokens.len() - 1) as f32 / start.elapsed().as_secs_f32()
+            );
+        }
+        Ok(self.tokenizer.decode(&tokens[prompt_len..], false)?)
+    }
+
+    pub fn compile(&mut self, prompt: String) -> (usize, Cache) {
+        self.generate(prompt, 0, true, None).unwrap();
+        (
+            self.position,
+            Cache {
+                key: self.cache.key.to_vec(),
+                value: self.cache.value.to_vec(),
+            },
+        )
     }
 }

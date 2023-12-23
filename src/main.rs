@@ -5,14 +5,14 @@ use mailparse::parse_header;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs, str,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH, Duration},
 };
 use tokio::{
     fs::OpenOptions,
     io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     join,
     sync::mpsc::{self, Receiver, Sender},
-    time,
+    time::{self, sleep},
 };
 
 #[derive(Deserialize)]
@@ -21,6 +21,8 @@ struct EmailConfig {
     address: String,
     password: String,
     interval: u64,
+    prompt_template: String,
+    output_len: usize,
 }
 
 #[derive(Deserialize)]
@@ -145,9 +147,15 @@ async fn store<A: Serialize + DeserializeOwned + std::fmt::Debug>(
     }
 }
 
-async fn map(mut receiver: Receiver<Event<Email>>, sender: Sender<(Event<Email>, bool)>) {
+async fn map(mut receiver: Receiver<Event<Email>>, sender: Sender<(Event<Email>, String)>, weights_pth: String, prompt_template: String, output_len: usize) {
+    let mut model = Model::from_file(weights_pth);
+    let mut prompt_template = prompt_template.split("{}");
+    let (prefix, postfix) = (prompt_template.next().unwrap(), prompt_template.next().unwrap());
+    let (position, cache) = model.compile(prefix.into());
     while let Some(event) = receiver.recv().await {
-        sender.send((event, true)).await.unwrap();
+        let output = model.generate(event.data.header.clone() + postfix, output_len, true, Some((position, &cache))).unwrap();
+        sender.send((event, output)).await.unwrap();
+        sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -186,7 +194,7 @@ async fn main() {
             length,
         } => {
             let mut model = Model::from_file(weights);
-            model.generate(prompt, length, true).unwrap();
+            model.generate(prompt, length, true, None).unwrap();
         }
         Commands::Email => {
             let (email_tx, email_rx) = mpsc::channel(5000);
@@ -207,12 +215,12 @@ async fn main() {
                 store::<Email>(email_rx, map_tx, "emails".into()).await;
             });
             let map_handle = tokio::spawn(async move {
-                map(map_rx, output_tx).await;
+                map(map_rx, output_tx, "weights.bin".into(), config.email.prompt_template, config.email.output_len).await;
             });
             let output_handle = tokio::spawn(async move {
-                output::<(Event<Email>, bool)>(
+                output::<(Event<Email>, String)>(
                     output_rx,
-                    |(_, pred)| *pred,
+                    |(_, pred)| true,
                     "filtered_emails".into(),
                 )
                 .await;
