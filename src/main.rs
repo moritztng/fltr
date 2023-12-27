@@ -1,34 +1,10 @@
 use clap::{Parser, Subcommand};
-use imap::ClientBuilder;
 use llamars::Model;
-use mailparse::parse_header;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    fs, str,
-    time::{SystemTime, UNIX_EPOCH, Duration},
+    io::{prelude::*, BufReader},
+    net::TcpListener,
 };
-use tokio::{
-    fs::OpenOptions,
-    io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    join,
-    sync::mpsc::{self, Receiver, Sender},
-    time::{self, sleep},
-};
-
-#[derive(Deserialize)]
-struct EmailConfig {
-    domain: String,
-    address: String,
-    password: String,
-    interval: u64,
-    prompt_template: String,
-    output_len: usize,
-}
-
-#[derive(Deserialize)]
-struct Config {
-    email: EmailConfig,
-}
+use url::Url;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -40,151 +16,24 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     Generate {
-        #[arg(short, long)]
+        #[arg(long)]
         weights: String,
-        #[arg(short, long)]
+        #[arg(long)]
         prompt: String,
-        #[arg(short, long, default_value_t = 256)]
+        #[arg(long, default_value_t = 256)]
         length: usize,
     },
-    Email,
+    Server {
+        #[arg(long)]
+        weights: String,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long, default_value_t = 5000)]
+        port: u16,
+    },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Email {
-    header: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Event<A> {
-    id: u32,
-    time: u64,
-    data: A,
-}
-
-async fn fetch_emails(
-    sender: Sender<Email>,
-    domain: String,
-    address: String,
-    password: String,
-    interval: u64,
-) {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open("fetch_emails_state.bin")
-        .await
-        .unwrap();
-    let mut last_uid = file.read_u32().await.unwrap_or(0);
-    let client = ClientBuilder::new(domain, 993).connect().unwrap();
-    let mut imap_session = client.login(address, password).map_err(|e| e.0).unwrap();
-    imap_session.select("INBOX").unwrap();
-    let mut interval = time::interval(time::Duration::from_secs(interval));
-    loop {
-        interval.tick().await;
-        let messages = imap_session
-            .uid_fetch(
-                format!("{}:*", last_uid + 1),
-                "(BODY[HEADER.FIELDS (SUBJECT)] UID)",
-            )
-            .unwrap();
-        for message in messages.iter() {
-            if message.uid.unwrap() == last_uid {
-                break;
-            }
-            let email = Email {
-                header: parse_header(message.header().unwrap())
-                    .unwrap()
-                    .0
-                    .get_value(),
-            };
-            sender.send(email).await.unwrap();
-            last_uid = message.uid.unwrap();
-        }
-        file.seek(io::SeekFrom::Start(0)).await.unwrap();
-        file.write_u32(last_uid).await.unwrap();
-    }
-}
-
-async fn store<A: Serialize + DeserializeOwned + std::fmt::Debug>(
-    mut receiver: Receiver<A>,
-    sender: Sender<Event<A>>,
-    name: String,
-) {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(format!("{name}_store.bin"))
-        .await
-        .unwrap();
-    let mut state_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(format!("{name}_store_state.bin"))
-        .await
-        .unwrap();
-    let mut id = state_file.read_u32().await.unwrap_or(0);
-
-    while let Some(data) = receiver.recv().await {
-        let event = Event {
-            id,
-            time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            data,
-        };
-        file.write_all(&bincode::serialize(&event).unwrap())
-            .await
-            .unwrap();
-        sender.send(event).await.unwrap();
-        id += 1;
-        state_file.seek(io::SeekFrom::Start(0)).await.unwrap();
-        state_file.write_u32(id).await.unwrap();
-    }
-}
-
-async fn map(mut receiver: Receiver<Event<Email>>, sender: Sender<(Event<Email>, String)>, weights_pth: String, prompt_template: String, output_len: usize) {
-    let mut model = Model::from_file(weights_pth);
-    let mut prompt_template = prompt_template.split("{}");
-    let (prefix, postfix) = (prompt_template.next().unwrap(), prompt_template.next().unwrap());
-    let (position, cache) = model.compile(prefix.into());
-    while let Some(event) = receiver.recv().await {
-        let output = model.generate(event.data.header.clone() + postfix, output_len, true, Some((position, &cache))).unwrap();
-        sender.send((event, output)).await.unwrap();
-        sleep(Duration::from_secs(1)).await;
-    }
-}
-
-async fn output<A: std::fmt::Debug + Serialize>(
-    mut receiver: Receiver<A>,
-    predicate: fn(&A) -> bool,
-    name: String,
-) {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(format!("{name}.csv"))
-        .unwrap();
-    let mut csv_writer = csv::WriterBuilder::new()
-        .has_headers(false)
-        .from_writer(file);
-    while let Some(data) = receiver.recv().await {
-        if predicate(&data) {
-            csv_writer.serialize(&data).unwrap();
-            csv_writer.flush().unwrap();
-            println!("{data:?}");
-        }
-    }
-}
-
-#[tokio::main]
-async fn main() {
-    let config: Config = toml::from_str(&fs::read_to_string("config.toml").unwrap()).unwrap();
+fn main() {
     let args = Args::parse();
 
     match args.command {
@@ -196,41 +45,51 @@ async fn main() {
             let mut model = Model::from_file(weights);
             model.generate(prompt, length, true, None).unwrap();
         }
-        Commands::Email => {
-            let (email_tx, email_rx) = mpsc::channel(5000);
-            let (map_tx, map_rx) = mpsc::channel(5000);
-            let (output_tx, output_rx) = mpsc::channel(5000);
-
-            let fetch_emails_handle = tokio::spawn(async move {
-                fetch_emails(
-                    email_tx,
-                    config.email.domain,
-                    config.email.address,
-                    config.email.password,
-                    config.email.interval
-                )
-                .await;
-            });
-            let store_emails_handle = tokio::spawn(async move {
-                store::<Email>(email_rx, map_tx, "emails".into()).await;
-            });
-            let map_handle = tokio::spawn(async move {
-                map(map_rx, output_tx, "weights.bin".into(), config.email.prompt_template, config.email.output_len).await;
-            });
-            let output_handle = tokio::spawn(async move {
-                output::<(Event<Email>, String)>(
-                    output_rx,
-                    |(_, pred)| true,
-                    "filtered_emails".into(),
-                )
-                .await;
-            });
-            let _ = join!(
-                fetch_emails_handle,
-                store_emails_handle,
-                map_handle,
-                output_handle,
-            );
+        Commands::Server {
+            weights,
+            prompt,
+            port,
+        } => {
+            let mut model = Model::from_file(weights);
+            let (position, cache) = model.compile(prompt);
+            let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut buffer = [0u8; 1024];
+                let mut output: Option<String> = None;
+                loop {
+                    let mut headers = [httparse::EMPTY_HEADER; 64];
+                    let mut request = httparse::Request::new(&mut headers);
+                    reader.read(&mut buffer).unwrap();
+                    if request.parse(&buffer).unwrap().is_complete() {
+                        let parts: Vec<&str> = request.path.unwrap().split('?').collect();
+                        let mut url = Url::from_file_path(parts[0]).unwrap();
+                        url.set_query(Some(parts[1]));
+                        if let Some(prompt) = url
+                            .query_pairs()
+                            .find_map(
+                                |(key, value)| {
+                                    if key == "prompt" {
+                                        Some(value.to_string())
+                                    } else {
+                                        None
+                                    }
+                                },
+                            )
+                        {
+                            output = Some(model.generate(prompt, 10, true, Some((position, &cache))).unwrap());
+                        }
+                        break;
+                    }
+                }
+                let response = if let Some(output) = output {
+                    format!("HTTP/1.1 200 OK\r\n\r\n{output}")
+                } else {
+                    "HTTP/1.1 404 NOT FOUND".into()
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+            }
         }
     }
 }
