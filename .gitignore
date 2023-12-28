@@ -1,5 +1,6 @@
+*.bin
+*.csv
 env
 target
 checkpoint
-*.bin
-*.csv
+service_account.json
