@@ -2,3 +2,4 @@ env
 target
 checkpoint
 *.bin
+*.csv

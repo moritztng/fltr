@@ -1,0 +1,8 @@
+title = "Config"
+
+[server]
+weights = "weights.bin"
+port = 5000
+prompts = [
+    {name = "sentiment", prefix = "Classify the text into positive or negative. Text:", postfix = " Classification:", output_len = 5},
+]

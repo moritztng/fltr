@@ -13,6 +13,7 @@ clap = { version = "4.4.11", features = ["derive"] }
 serde = { version = "1.0.193", features = ["derive"] }
 url = "2.5.0"
 httparse = "1.8.0"
+toml = "0.8.8"
 
 [dev-dependencies]
 criterion = "0.3"

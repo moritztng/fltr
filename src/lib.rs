@@ -181,7 +181,7 @@ fn ptr_to_slice<const A: usize>(ptr: &mut *const u8) -> &'static [f32] {
 }
 
 impl Model {
-    pub fn from_file(weights_pth: String) -> Model {
+    pub fn from_file(weights_pth: &String) -> Model {
         let mmap: MmapRaw = MmapOptions::new()
             .map_raw_read_only(&File::open(weights_pth).unwrap())
             .unwrap();
@@ -389,15 +389,20 @@ impl Model {
 
     pub fn generate(
         &mut self,
-        prompt: String,
+        prompt: &String,
         steps: usize,
         print: bool,
-        cache: Option<(usize, &Cache)>,
+        autostop: bool,
+        cache: Option<&(usize, Cache)>,
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
-        let mut tokens = self.tokenizer.encode(prompt, true)?.get_ids().to_vec();
+        let mut tokens = self
+            .tokenizer
+            .encode(prompt.to_owned(), cache.is_none())?
+            .get_ids()
+            .to_vec();
         let prompt_len = tokens.len();
         if let Some((position, cache)) = cache {
-            self.position = position;
+            self.position = *position;
             self.cache.key.copy_from_slice(&cache.key);
             self.cache.value.copy_from_slice(&cache.value);
         } else {
@@ -426,6 +431,9 @@ impl Model {
                     .ok_or("max logits error")?
                     .0;
                 tokens.push(token as u32);
+                if autostop && token == 13 {
+                    break;
+                }
             }
             if i == 0 {
                 start = Instant::now();
@@ -434,15 +442,15 @@ impl Model {
         }
         if print {
             println!(
-                "tokens/sec: {}",
+                "\ntokens/sec: {}",
                 (tokens.len() - 1) as f32 / start.elapsed().as_secs_f32()
             );
         }
         Ok(self.tokenizer.decode(&tokens[prompt_len..], false)?)
     }
 
-    pub fn compile(&mut self, prompt: String) -> (usize, Cache) {
-        self.generate(prompt, 0, true, None).unwrap();
+    pub fn compile(&mut self, prompt: &String) -> (usize, Cache) {
+        self.generate(prompt, 0, true, false, None).unwrap();
         (
             self.position,
             Cache {
