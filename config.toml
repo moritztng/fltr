@@ -4,5 +4,5 @@ title = "Config"
 weights = "weights.bin"
 port = 5000
 prompts = [
-    {name = "sentiment", prefix = "Classify the text into positive or negative. Text:", postfix = " Classification:", output_len = 5},
+    {name = "ml", prefix = "Is the following title of a scientific paper about the topic machine learning? Answer yes or no.\nTitle: ImageNet Classification with Deep Convolutional Neural Networks\nAnswer: yes\nTitle: A Mathematical Theory of Communication\nAnswer: no\nTitle:", postfix = "\nAnswer:", output_len = 1},
 ]
