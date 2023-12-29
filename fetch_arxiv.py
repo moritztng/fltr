@@ -24,7 +24,7 @@ while True:
         output = None
         while output is None:
             try:
-                output = requests.get("http://localhost:5000", params={"prompt": "ml", "input": title}).text
+                output = requests.get("http://localhost:5000", params={"prompt": "topic", "input": title}).text
             except:
                 print("llm connection error")
                 sleep(1)
