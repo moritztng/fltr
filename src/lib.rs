@@ -1,7 +1,13 @@
 use core::slice::from_raw_parts;
 use memmap2::{MmapOptions, MmapRaw};
 use rayon::prelude::*;
-use std::{error::Error, fs::File, io::Write, time::Instant};
+use std::{
+    error::Error,
+    fs::File,
+    io::Write,
+    iter::{self, repeat},
+    time::Instant,
+};
 use tokenizers::tokenizer::Tokenizer;
 
 const vocab_size: usize = 32000;
@@ -275,32 +281,40 @@ impl Model {
             let value_cache = &mut layer_value_cache[offset..offset + kv_dim];
             matmul(key_cache, &weights.key, &qstate_tensor);
             matmul(value_cache, &weights.value, &qstate_tensor);
-            for (query_head, key_head) in self
-                .buffer
-                .query
-                .chunks_exact_mut(head_size)
-                .zip(key_cache.chunks_exact_mut(head_size))
-            {
-                for (i, (query_pair, key_pair)) in query_head
+
+            let mut fcrs = [0f32; head_size];
+            let mut fcis = [0f32; head_size];
+            for (i, (fcr, fci)) in fcrs.iter_mut().zip(fcis.iter_mut()).enumerate() {
+                let frequency = 1f32 / 10000f32.powf((i * 2) as f32 / head_size as f32);
+                let value = pos as f32 * frequency;
+                *fcr = value.cos();
+                *fci = value.sin();
+            }
+            for query_head in self.buffer.query.chunks_exact_mut(head_size) {
+                for ((query_pair, fcr), fci) in query_head
                     .chunks_exact_mut(2)
-                    .zip(key_head.chunks_exact_mut(2))
-                    .enumerate()
+                    .zip(fcrs.iter())
+                    .zip(fcis.iter())
                 {
-                    let frequency = 1f32 / 10000f32.powf((i * 2) as f32 / head_size as f32);
-                    let value = pos as f32 * frequency;
-                    let fcr = value.cos();
-                    let fci = value.sin();
                     query_pair.copy_from_slice(&[
                         query_pair[0] * fcr - query_pair[1] * fci,
                         query_pair[0] * fci + query_pair[1] * fcr,
                     ]);
+                }
+            }
+            for key_head in key_cache.chunks_exact_mut(head_size) {
+                for ((key_pair, fcr), fci) in key_head
+                    .chunks_exact_mut(2)
+                    .zip(fcrs.iter())
+                    .zip(fcis.iter())
+                {
                     key_pair.copy_from_slice(&[
                         key_pair[0] * fcr - key_pair[1] * fci,
                         key_pair[0] * fci + key_pair[1] * fcr,
                     ]);
                 }
             }
-
+ 
             self.buffer.state.fill(0f32);
             for (h, (state_head, query_head)) in self
                 .buffer
@@ -309,7 +323,7 @@ impl Model {
                 .zip(self.buffer.query.chunks_exact(head_size))
                 .enumerate()
             {
-                let offset = h * head_size;
+                let offset = h * n_kv_heads / n_heads * head_size;
                 for (attention_x, pos_key_cache) in self.buffer.attention[0..=pos]
                     .iter_mut()
                     .zip(layer_key_cache.chunks_exact(kv_dim))
