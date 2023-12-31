@@ -1,4 +1,4 @@
-import torch, json, struct
+import torch, struct
 import numpy as np
 from argparse import ArgumentParser
 

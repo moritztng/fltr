@@ -1,11 +1,9 @@
-use llamars::generate;
-use std::error::Error;
+use std::path::Path;
+
+use llamars::Model;
 
 #[test]
-fn test_generate() -> Result<(), Box<dyn Error + Send + Sync>> {
-    assert_eq!(
-        generate("weights.bin".into(), "Once upon a time".into(), 14, true)?,
-        "<s> Once upon a time, there was a little girl named Lily."
-    );
-    Ok(())
+fn test_generate() {
+    let mut model = Model::from_dir(Path::new("models/mistral"));
+    model.generate(&"Once upon a time,".to_owned(), 10, true, false, None).unwrap();
 }

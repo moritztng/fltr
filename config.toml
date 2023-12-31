@@ -1,8 +1,21 @@
 title = "Config"
 
 [server]
-weights = "weights.bin"
+model = "mistral"
 port = 5000
 prompts = [
-    {name = "topic", prefix = "Classify the title into one of the topics \"Language Models\", \"Computer Vision\", \"Reinforcement Learning\", \"Other\".\nTitle: Language Models are Few-Shot Learners\nTopic: Language Models\nTitle: ImageNet Classification with Deep Convolutional Neural Networks\nTopic: Computer Vision\nTitle: Trust Region Policy Optimization\nTopic: Reinforcement Learning\nTitle: A Mathematical Theory of Communication\nTopic: Other\nTitle:", postfix = "\nTopic:", output_len = 5},
+    { name = "efficiency", prefix = """
+You are an engineer who wants to make machine learning run faster.
+
+Explain if the scientific paper improves the speed of machine learning algorithms.
+
+Output Format:
+###Explanation###
+###Answer (yes or no)###
+
+###Paper###
+""", postfix = """
+
+###Explanation###
+Let,s think step by step.""", output_len = 100 },
 ]

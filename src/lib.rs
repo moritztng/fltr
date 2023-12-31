@@ -4,19 +4,17 @@ use rayon::prelude::*;
 use std::{
     error::Error,
     fs::File,
-    io::Write,
-    iter::{self, repeat},
-    time::Instant,
+    io::Write, path::Path, time::Instant,
 };
 use tokenizers::tokenizer::Tokenizer;
 
 const vocab_size: usize = 32000;
 const state_size: usize = 2048;
 const n_layers: usize = 32;
-const n_kv_heads: usize = 32;
+const n_kv_heads: usize = 8;
 const n_heads: usize = 32;
 const head_size: usize = 128;
-const hidden_dim: usize = 11008;
+const hidden_dim: usize = 14336;
 const dim: usize = head_size * n_heads;
 const kv_dim: usize = head_size * n_kv_heads;
 const q_group_size: usize = 64;
@@ -187,9 +185,9 @@ fn ptr_to_slice<const A: usize>(ptr: &mut *const u8) -> &'static [f32] {
 }
 
 impl Model {
-    pub fn from_file(weights_pth: &String) -> Model {
+    pub fn from_dir(path: &Path) -> Model {
         let mmap: MmapRaw = MmapOptions::new()
-            .map_raw_read_only(&File::open(weights_pth).unwrap())
+            .map_raw_read_only(&File::open(path.join("weights.bin")).unwrap())
             .unwrap();
         let mut weights_ptr = mmap.as_ptr() as *const u8;
         let rms_final = ptr_to_slice::<dim>(&mut weights_ptr);
@@ -253,7 +251,7 @@ impl Model {
                 output,
             },
             position: 0,
-            tokenizer: Tokenizer::from_file("tokenizer.json").unwrap(),
+            tokenizer: Tokenizer::from_file(path.join("tokenizer.json")).unwrap(),
             mmap: mmap,
         }
     }
@@ -285,7 +283,7 @@ impl Model {
             let mut fcrs = [0f32; head_size];
             let mut fcis = [0f32; head_size];
             for (i, (fcr, fci)) in fcrs.iter_mut().zip(fcis.iter_mut()).enumerate() {
-                let frequency = 1f32 / 10000f32.powf((i * 2) as f32 / head_size as f32);
+                let frequency = 1f32 / 1000000f32.powf((i * 2) as f32 / head_size as f32);
                 let value = pos as f32 * frequency;
                 *fcr = value.cos();
                 *fci = value.sin();

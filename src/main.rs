@@ -3,7 +3,7 @@ use llamars::Model;
 use serde::Deserialize;
 use std::{
     io::{prelude::*, BufReader},
-    net::TcpListener, fs, collections::HashMap,
+    net::TcpListener, fs, collections::HashMap, path::Path,
 };
 use url::Url;
 
@@ -17,7 +17,7 @@ struct Prompt {
 
 #[derive(Deserialize)]
 struct Server {
-    weights: String,
+    model: String,
     port: u16,
     prompts: Vec<Prompt>,
 }
@@ -38,7 +38,7 @@ struct Args {
 enum Commands {
     Generate {
         #[arg(long)]
-        weights: String,
+        model: String,
         #[arg(long)]
         prompt: String,
         #[arg(long, default_value_t = 256)]
@@ -54,17 +54,17 @@ fn main() {
 
     match args.command {
         Commands::Generate {
-            weights,
+            model,
             prompt,
             length,
             autostop,
         } => {
-            let mut model = Model::from_file(&weights);
+            let mut model = Model::from_dir(Path::new(&model));
             model.generate(&prompt, length, true, autostop, None).unwrap();
         }
         Commands::Server => {
             let config: Config = toml::from_str(&fs::read_to_string("config.toml").unwrap()).unwrap();
-            let mut model = Model::from_file(&config.server.weights);
+            let mut model = Model::from_dir(Path::new(&config.server.model));
             let mut prompts = HashMap::new();
             for prompt in config.server.prompts {
                 prompts.insert(prompt.name, (model.compile(&prompt.prefix), prompt.postfix, prompt.output_len));
@@ -73,7 +73,7 @@ fn main() {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let mut reader = BufReader::new(&mut stream);
-                let mut buffer = [0u8; 1024];
+                let mut buffer = [0u8; 10048];
                 let mut output: Option<String> = None;
                 loop {
                     let mut headers = [httparse::EMPTY_HEADER; 64];
@@ -88,7 +88,7 @@ fn main() {
                             .collect();
                         let (cache, postfix, output_len) = prompts.get(&query_args.get("prompt").unwrap().to_string()).unwrap();
                         let input = query_args.get("input").unwrap().to_string() + postfix;
-                        output = Some(model.generate(&input, *output_len, true, true, Some(cache)).unwrap());
+                        output = Some(model.generate(&input, *output_len, true, false, Some(cache)).unwrap());
                         break;
                     }
                 }
