@@ -59,9 +59,16 @@ with open(args.output_path, "wb") as f:
     print(f"output.weight, error: {err}")
     for i in range(32):
         layer_prefix = f'layers.{i}.'
+        print(layer_prefix)
         for name in ['attention_norm.weight', 'ffn_norm.weight']:
             serialize_fp32(f, state_dict[layer_prefix + name])
             print(name)
-        for name in ['attention.wq.weight', 'attention.wk.weight', 'attention.wv.weight', 'attention.wo.weight', 'feed_forward.w1.weight', 'feed_forward.w2.weight', 'feed_forward.w3.weight']:
+        for name in ['attention.wq.weight', 'attention.wk.weight', 'attention.wv.weight', 'attention.wo.weight', 'feed_forward.gate.weight']:
             err = quantize_serialize(f, state_dict[layer_prefix + name], args.group_size)
             print(f"{name}, error: {err}")
+        for e in range(8):
+            expert_prefix = layer_prefix + f"feed_forward.experts.{e}."
+            print(expert_prefix)
+            for name in ['w1.weight', 'w2.weight', 'w3.weight']:
+                err = quantize_serialize(f, state_dict[expert_prefix + name], args.group_size)
+                print(f"{name}, error: {err}")

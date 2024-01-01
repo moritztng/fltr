@@ -1,11 +1,7 @@
 use core::slice::from_raw_parts;
 use memmap2::{MmapOptions, MmapRaw};
 use rayon::prelude::*;
-use std::{
-    error::Error,
-    fs::File,
-    io::Write, path::Path, time::Instant,
-};
+use std::{error::Error, fs::File, io::Write, path::Path, time::Instant};
 use tokenizers::tokenizer::Tokenizer;
 
 const vocab_size: usize = 32000;
@@ -15,15 +11,19 @@ const n_kv_heads: usize = 8;
 const n_heads: usize = 32;
 const head_size: usize = 128;
 const hidden_dim: usize = 14336;
+const n_experts: usize = 8;
+const n_experts_per_token: usize = 2;
 const dim: usize = head_size * n_heads;
 const kv_dim: usize = head_size * n_kv_heads;
 const q_group_size: usize = 64;
+
 struct Quantized<A, B> {
     values: A,
     scales: B,
 }
 type QuantizedTensor<'a> = Quantized<&'a [i8], &'a [f32]>;
 type QuantizedBuffer = Quantized<Vec<i8>, Vec<f32>>;
+
 impl QuantizedBuffer {
     fn to_tensor(&self) -> QuantizedTensor<'_> {
         QuantizedTensor {
@@ -46,6 +46,12 @@ impl QuantizedTensor<'_> {
     }
 }
 
+struct Expert {
+    ff1: QuantizedTensor<'static>,
+    ff2: QuantizedTensor<'static>,
+    swiglu: QuantizedTensor<'static>,
+}
+
 struct Layer {
     query: QuantizedTensor<'static>,
     key: QuantizedTensor<'static>,
@@ -53,9 +59,8 @@ struct Layer {
     heads: QuantizedTensor<'static>,
     rms_attention: &'static [f32],
     rms_feedforward: &'static [f32],
-    ff1: QuantizedTensor<'static>,
-    ff2: QuantizedTensor<'static>,
-    swiglu: QuantizedTensor<'static>,
+    gate: QuantizedTensor<'static>,
+    experts: Vec<Expert>,
 }
 
 struct Weights {
@@ -205,9 +210,15 @@ impl Model {
             let value =
                 QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
             let heads = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
-            let ff1 = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
-            let ff2 = QuantizedTensor::from_ptr::<{ hidden_dim * dim }>(&mut weights_ptr);
-            let swiglu = QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr);
+            let gate = QuantizedTensor::from_ptr::<{ dim * n_experts }>(&mut weights_ptr);
+            let mut experts = Vec::new();
+            for _ in 0..n_experts {
+                experts.push(Expert {
+                    ff1: QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr),
+                    ff2: QuantizedTensor::from_ptr::<{ hidden_dim * dim }>(&mut weights_ptr),
+                    swiglu: QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr),
+                })
+            }
 
             layers.push(Layer {
                 rms_attention,
@@ -216,9 +227,8 @@ impl Model {
                 key,
                 value,
                 heads,
-                ff1,
-                ff2,
-                swiglu,
+                gate,
+                experts,
             });
         }
 
@@ -269,10 +279,9 @@ impl Model {
             .zip(self.cache.value.chunks_exact_mut(state_size * kv_dim))
         {
             rmsnorm(&mut self.buffer.state, &self.state, weights.rms_attention);
-
+            
             quantize(&mut self.buffer.qstate, &self.buffer.state);
             let mut qstate_tensor = self.buffer.qstate.to_tensor();
-
             matmul(&mut self.buffer.query, &weights.query, &qstate_tensor);
             let offset = pos * kv_dim;
             let key_cache = &mut layer_key_cache[offset..offset + kv_dim];
@@ -312,7 +321,7 @@ impl Model {
                     ]);
                 }
             }
- 
+
             self.buffer.state.fill(0f32);
             for (h, (state_head, query_head)) in self
                 .buffer
@@ -366,32 +375,41 @@ impl Model {
 
             quantize(&mut self.buffer.qstate, &self.buffer.state);
             qstate_tensor = self.buffer.qstate.to_tensor();
-            matmul(&mut self.buffer.ff_hidden, &weights.ff1, &qstate_tensor);
+            let mut expert_logits = [0f32; n_experts];
+            matmul(&mut expert_logits, &weights.gate, &qstate_tensor);
+            let mut indices_logits: Vec<_> = expert_logits.iter().enumerate().collect();
+            indices_logits.sort_unstable_by(|(_, logit1), (_, logit2)| logit2.total_cmp(logit1));
+            let (expert_indices, mut expert_weights): (Vec<_>, Vec<_>) =
+                indices_logits.into_iter().take(n_experts_per_token).unzip();
+            softmax(&mut expert_weights);
 
-            matmul(&mut self.buffer.swiglu, &weights.swiglu, &qstate_tensor);
-            for (hidden_x, swiglu_x) in self
-                .buffer
-                .ff_hidden
-                .iter_mut()
-                .zip(self.buffer.swiglu.iter())
-            {
-                *hidden_x *= 1f32 / (1f32 + (-*hidden_x).exp());
-                *hidden_x *= swiglu_x;
+            for (expert_index, expert_weight) in expert_indices.iter().zip(expert_weights) {
+                let expert = &weights.experts[*expert_index];
+                matmul(&mut self.buffer.ff_hidden, &expert.ff1, &qstate_tensor);
+                matmul(&mut self.buffer.swiglu, &expert.swiglu, &qstate_tensor);
+                for (hidden_x, swiglu_x) in self
+                    .buffer
+                    .ff_hidden
+                    .iter_mut()
+                    .zip(self.buffer.swiglu.iter())
+                {
+                    *hidden_x *= 1f32 / (1f32 + (-*hidden_x).exp());
+                    *hidden_x *= swiglu_x;
+                }
+                quantize(&mut self.buffer.qhidden, &self.buffer.ff_hidden);
+                matmul(
+                    &mut self.buffer.state,
+                    &expert.ff2,
+                    &self.buffer.qhidden.to_tensor(),
+                );
+                smul(&mut self.buffer.state, expert_weight);
+                add(&mut self.state, &self.buffer.state);
             }
-
-            quantize(&mut self.buffer.qhidden, &self.buffer.ff_hidden);
-            matmul(
-                &mut self.buffer.state,
-                &weights.ff2,
-                &self.buffer.qhidden.to_tensor(),
-            );
-            add(&mut self.state, &self.buffer.state);
         }
 
         rmsnorm(&mut self.buffer.state, &self.state, &self.weights.rms_final);
 
         quantize(&mut self.buffer.qstate, &self.buffer.state);
-
         matmul(
             &mut self.buffer.logits,
             &self.weights.output,

@@ -1,6 +1,4 @@
-*.bin
-*.csv
 env
 target
-checkpoint
+models
 service_account.json
