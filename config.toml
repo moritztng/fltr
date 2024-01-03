@@ -1,21 +1,19 @@
 title = "Config"
 
 [server]
-model = "mistral"
+model = "models/mixtral"
 port = 5000
 prompts = [
-    { name = "efficiency", prefix = """
-You are an engineer who wants to make machine learning run faster.
-
-Explain if the scientific paper improves the speed of machine learning algorithms.
+    { name = "papers", prefix = """
+Is the following paper better than existing methods on many tasks?
 
 Output Format:
-###Explanation###
-###Answer (yes or no)###
+Explanation:
+Answer: yes or no
 
-###Paper###
+Paper:
 """, postfix = """
 
-###Explanation###
-Let,s think step by step.""", output_len = 100 },
+Explanation:
+""", output_len = 500 },
 ]
