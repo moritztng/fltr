@@ -2,3 +2,5 @@ env
 target
 models
 service_account.json
+.env
+refresh_token
