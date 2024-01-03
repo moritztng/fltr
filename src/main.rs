@@ -88,7 +88,7 @@ fn main() {
                             .collect();
                         let (cache, postfix, output_len) = prompts.get(&query_args.get("prompt").unwrap().to_string()).unwrap();
                         let input = query_args.get("input").unwrap().to_string() + postfix;
-                        output = Some(model.generate(&input, *output_len, true, false, Some(cache)).unwrap());
+                        output = Some(model.generate(&input, *output_len, true, true, Some(cache)).unwrap());
                         break;
                     }
                 }

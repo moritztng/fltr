@@ -461,7 +461,7 @@ impl Model {
                     .ok_or("max logits error")?
                     .0;
                 tokens.push(token as u32);
-                if autostop && token == 13 {
+                if autostop && token == 2 {
                     break;
                 }
             }
