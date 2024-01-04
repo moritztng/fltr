@@ -1,5 +1,7 @@
 #!/bin/bash
 
 target/release/llamars server &
-env/bin/python3 fetch_arxiv.py
+source env/bin/activate
+while true; do python3 bots/x_bot.py; sleep 60; done &
+python3 bots/fetch_arxiv.py
 shudown -h now

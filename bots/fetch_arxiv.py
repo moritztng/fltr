@@ -37,13 +37,17 @@ while True:
         while True:
             try:
                 output = requests.get("http://localhost:5000", params={"prompt": "papers", "input": f"{title}\n{abstract}"}).text
-                explanation, answer = output.split("Answer:")
-                classification = "yes" in answer.lower()
-                bigquery_client.insert_rows(bigquery_client.get_table("llamars.arxiv.arxiv"), [{"id": id, "date": date, "title": title, "abstract": abstract, "explanation": explanation, "answer": answer, "classification": classification}])
                 break
             except:
                 print("llm connection error")
                 sleep(1)
+        output = output.split("Answer:")
+        explanation, answer = (output[0], "Answer:" + output[1]) if len(output) == 2 else (output[0], "")
+        classification = "yes" in answer.lower()
+        errors = bigquery_client.insert_rows(bigquery_client.get_table("llamars.arxiv.arxiv"), [{"id": id, "date": date, "title": title, "abstract": abstract, "explanation": explanation, "answer": answer, "classification": classification}])
+        if errors:
+            raise ValueError(errors)
+        
     token = list_records.find(OAI+"resumptionToken")
     if token is None or token.text is None:
         break
