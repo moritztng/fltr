@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use llamars::Model;
+use mixtral::Model;
 use serde::Deserialize;
 use std::{
     io::{prelude::*, BufReader},
@@ -60,7 +60,7 @@ fn main() {
             autostop,
         } => {
             let mut model = Model::from_dir(Path::new(&model));
-            model.generate(&prompt, length, true, autostop, None).unwrap();
+            model.generate(&prompt, length, true, autostop, None);
         }
         Commands::Server => {
             let config: Config = toml::from_str(&fs::read_to_string("config.toml").unwrap()).unwrap();
@@ -88,7 +88,7 @@ fn main() {
                             .collect();
                         let (cache, postfix, output_len) = prompts.get(&query_args.get("prompt").unwrap().to_string()).unwrap();
                         let input = query_args.get("input").unwrap().to_string() + postfix;
-                        output = Some(model.generate(&input, *output_len, true, true, Some(cache)).unwrap());
+                        output = Some(model.generate(&input, *output_len, true, true, Some(cache)));
                         break;
                     }
                 }

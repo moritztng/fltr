@@ -7,34 +7,34 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'llamars'",
+            "name": "Debug executable 'mixtral'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=llamars",
-                    "--package=llamars"
+                    "--bin=mixtral",
+                    "--package=mixtral"
                 ],
                 "filter": {
-                    "name": "llamars",
+                    "name": "mixtral",
                     "kind": "bin"
                 }
             },
-            "args": ["generate", "--model=models/mistral", "--prompt=hi"],
+            "args": ["generate", "--model=models/mixtral", "--prompt=\"Once upon a time\""],
             "cwd": "${workspaceFolder}"
         },
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'llamars'",
+            "name": "Debug unit tests in executable 'mixtral'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=llamars",
-                    "--package=llamars"
+                    "--bin=mixtral",
+                    "--package=mixtral"
                 ],
                 "filter": {
-                    "name": "llamars",
+                    "name": "mixtral",
                     "kind": "bin"
                 }
             },

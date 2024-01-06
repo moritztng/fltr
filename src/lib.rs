@@ -1,7 +1,7 @@
 use core::slice::from_raw_parts;
 use memmap2::{MmapOptions, MmapRaw};
 use rayon::prelude::*;
-use std::{error::Error, fs::File, io::Write, path::Path, time::Instant};
+use std::{fs::File, io::Write, path::Path, time::Instant};
 use tokenizers::tokenizer::Tokenizer;
 
 const vocab_size: usize = 32000;
@@ -424,10 +424,10 @@ impl Model {
         print: bool,
         autostop: bool,
         cache: Option<&(usize, Cache)>,
-    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+    ) -> String {
         let mut tokens = self
             .tokenizer
-            .encode(prompt.to_owned(), cache.is_none())?
+            .encode(prompt.to_owned(), cache.is_none()).unwrap()
             .get_ids()
             .to_vec();
         let prompt_len = tokens.len();
@@ -446,10 +446,10 @@ impl Model {
                     "{}",
                     self.tokenizer
                         .id_to_token(tokens[i] as u32)
-                        .ok_or("print token error")?
+                        .unwrap()
                         .replace("▁", " ")
                 );
-                std::io::stdout().flush()?;
+                std::io::stdout().flush().unwrap();
             }
             if i == tokens.len() - 1 {
                 let token = self
@@ -458,7 +458,7 @@ impl Model {
                     .iter()
                     .enumerate()
                     .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
-                    .ok_or("max logits error")?
+                    .unwrap()
                     .0;
                 tokens.push(token as u32);
                 if autostop && token == 2 {
@@ -476,11 +476,11 @@ impl Model {
                 (tokens.len() - 1) as f32 / start.elapsed().as_secs_f32()
             );
         }
-        Ok(self.tokenizer.decode(&tokens[prompt_len..], false)?)
+        self.tokenizer.decode(&tokens[prompt_len..], false).unwrap()
     }
 
     pub fn compile(&mut self, prompt: &String) -> (usize, Cache) {
-        self.generate(prompt, 0, true, false, None).unwrap();
+        self.generate(prompt, 0, true, false, None);
         (
             self.position,
             Cache {

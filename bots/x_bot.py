@@ -26,7 +26,7 @@ with open("refresh_token", "r+") as f:
     f.write(response["refresh_token"])
     access_token = response["access_token"]
 
-rows = bigquery_client.query("SELECT id, title FROM llamars.arxiv.arxiv LEFT JOIN llamars.arxiv.posts posts USING(id) WHERE posts.id IS NULL AND classification = true").result()
+rows = bigquery_client.query("SELECT id, title FROM llamars.arxiv.arxiv LEFT JOIN llamars.arxiv.posts posts USING(id) WHERE posts.id IS NULL AND classification = false").result()
 
 for row in rows:
     response = requests.request(
