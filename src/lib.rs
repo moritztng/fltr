@@ -4,18 +4,18 @@ use rayon::prelude::*;
 use std::{fs::File, io::Write, path::Path, time::Instant};
 use tokenizers::tokenizer::Tokenizer;
 
-const vocab_size: usize = 32000;
-const state_size: usize = 2048;
-const n_layers: usize = 32;
-const n_kv_heads: usize = 8;
-const n_heads: usize = 32;
-const head_size: usize = 128;
-const hidden_dim: usize = 14336;
-const n_experts: usize = 8;
-const n_experts_per_token: usize = 2;
-const dim: usize = head_size * n_heads;
-const kv_dim: usize = head_size * n_kv_heads;
-const q_group_size: usize = 64;
+const VOCAB_SIZE: usize = 32000;
+const STATE_SIZE: usize = 2048;
+const N_LAYERS: usize = 32;
+const N_KV_HEADS: usize = 8;
+const N_HEADS: usize = 32;
+const HEAD_SIZE: usize = 128;
+const HIDDEN_DIM: usize = 14336;
+const N_EXPERTS: usize = 8;
+const N_EXPERTS_PER_TOKEN: usize = 2;
+const DIM: usize = HEAD_SIZE * N_HEADS;
+const KV_DIM: usize = HEAD_SIZE * N_KV_HEADS;
+const Q_GROUP_SIZE: usize = 64;
 
 struct Quantized<A, B> {
     values: A,
@@ -38,9 +38,9 @@ impl QuantizedTensor<'_> {
         unsafe {
             let tensor = QuantizedTensor {
                 values: from_raw_parts(*ptr as *const i8, A),
-                scales: from_raw_parts(ptr.add(A) as *const f32, A / q_group_size),
+                scales: from_raw_parts(ptr.add(A) as *const f32, A / Q_GROUP_SIZE),
             };
-            *ptr = ptr.add(A + 4 * (A / q_group_size));
+            *ptr = ptr.add(A + 4 * (A / Q_GROUP_SIZE));
             tensor
         }
     }
@@ -97,15 +97,15 @@ pub struct Model {
 }
 
 fn quantize(out: &mut QuantizedBuffer, x: &[f32]) {
-    const q_max: f32 = 127f32;
+    const Q_MAX: f32 = 127f32;
     for ((out_group, x_group), scale) in out
         .values
-        .chunks_exact_mut(q_group_size)
-        .zip(x.chunks_exact(q_group_size))
+        .chunks_exact_mut(Q_GROUP_SIZE)
+        .zip(x.chunks_exact(Q_GROUP_SIZE))
         .zip(out.scales.iter_mut())
     {
         let group_max = x_group.iter().map(|x| x.abs()).reduce(f32::max).unwrap();
-        *scale = group_max / q_max;
+        *scale = group_max / Q_MAX;
         for (out_x, x_x) in out_group.iter_mut().zip(x_group.iter()) {
             *out_x = (*x_x / *scale).round() as i8;
         }
@@ -114,8 +114,8 @@ fn quantize(out: &mut QuantizedBuffer, x: &[f32]) {
 
 fn dequantize(out: &mut [f32], x: &QuantizedTensor) {
     for ((out_group, x_group), scale) in out
-        .chunks_exact_mut(q_group_size)
-        .zip(x.values.chunks_exact(q_group_size))
+        .chunks_exact_mut(Q_GROUP_SIZE)
+        .zip(x.values.chunks_exact(Q_GROUP_SIZE))
         .zip(x.scales.iter())
     {
         for (out_x, x_x) in out_group.iter_mut().zip(x_group.iter()) {
@@ -127,12 +127,12 @@ fn dequantize(out: &mut [f32], x: &QuantizedTensor) {
 fn matmul(out: &mut [f32], a: &QuantizedTensor, b: &QuantizedTensor) {
     out.par_iter_mut()
         .zip_eq(a.values.par_chunks_exact(b.values.len()))
-        .zip_eq(a.scales.par_chunks_exact(b.values.len() / q_group_size))
+        .zip_eq(a.scales.par_chunks_exact(b.values.len() / Q_GROUP_SIZE))
         .for_each(|((out_x, a_row), a_row_scales)| {
             let mut x = 0f32;
             for (((a_row_group, b_group), a_row_scale), b_scale) in a_row
-                .chunks_exact(q_group_size)
-                .zip(b.values.chunks_exact(q_group_size))
+                .chunks_exact(Q_GROUP_SIZE)
+                .zip(b.values.chunks_exact(Q_GROUP_SIZE))
                 .zip(a_row_scales.iter())
                 .zip(b.scales.iter())
             {
@@ -175,7 +175,7 @@ fn add(a: &mut [f32], b: &[f32]) {
 fn rmsnorm(out: &mut [f32], x: &[f32], weights: &[f32]) {
     let mut rms = x.iter().fold(0f32, |acc, x| acc + x.powi(2));
 
-    rms = 1f32 / (rms / dim as f32 + 1e-5).sqrt();
+    rms = 1f32 / (rms / DIM as f32 + 1e-5).sqrt();
     for ((out_x, weights_x), x_x) in out.iter_mut().zip(weights.iter()).zip(x.iter()) {
         *out_x = weights_x * (rms * x_x);
     }
@@ -195,28 +195,28 @@ impl Model {
             .map_raw_read_only(&File::open(path.join("weights.bin")).unwrap())
             .unwrap();
         let mut weights_ptr = mmap.as_ptr() as *const u8;
-        let rms_final = ptr_to_slice::<dim>(&mut weights_ptr);
-        let qembeddings = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
-        let mut embeddings = vec![0f32; vocab_size * dim];
+        let rms_final = ptr_to_slice::<DIM>(&mut weights_ptr);
+        let qembeddings = QuantizedTensor::from_ptr::<{ VOCAB_SIZE * DIM }>(&mut weights_ptr);
+        let mut embeddings = vec![0f32; VOCAB_SIZE * DIM];
         dequantize(&mut embeddings, &qembeddings);
-        let output = QuantizedTensor::from_ptr::<{ vocab_size * dim }>(&mut weights_ptr);
+        let output = QuantizedTensor::from_ptr::<{ VOCAB_SIZE * DIM }>(&mut weights_ptr);
         let mut layers = Vec::new();
         for _ in 0..32 {
-            let rms_attention = ptr_to_slice::<dim>(&mut weights_ptr);
-            let rms_feedforward = ptr_to_slice::<dim>(&mut weights_ptr);
-            let query = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
+            let rms_attention = ptr_to_slice::<DIM>(&mut weights_ptr);
+            let rms_feedforward = ptr_to_slice::<DIM>(&mut weights_ptr);
+            let query = QuantizedTensor::from_ptr::<{ DIM * DIM }>(&mut weights_ptr);
             let key =
-                QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
+                QuantizedTensor::from_ptr::<{ DIM * N_KV_HEADS * HEAD_SIZE }>(&mut weights_ptr);
             let value =
-                QuantizedTensor::from_ptr::<{ dim * n_kv_heads * head_size }>(&mut weights_ptr);
-            let heads = QuantizedTensor::from_ptr::<{ dim * dim }>(&mut weights_ptr);
-            let gate = QuantizedTensor::from_ptr::<{ dim * n_experts }>(&mut weights_ptr);
+                QuantizedTensor::from_ptr::<{ DIM * N_KV_HEADS * HEAD_SIZE }>(&mut weights_ptr);
+            let heads = QuantizedTensor::from_ptr::<{ DIM * DIM }>(&mut weights_ptr);
+            let gate = QuantizedTensor::from_ptr::<{ DIM * N_EXPERTS }>(&mut weights_ptr);
             let mut experts = Vec::new();
-            for _ in 0..n_experts {
+            for _ in 0..N_EXPERTS {
                 experts.push(Expert {
-                    ff1: QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr),
-                    ff2: QuantizedTensor::from_ptr::<{ hidden_dim * dim }>(&mut weights_ptr),
-                    swiglu: QuantizedTensor::from_ptr::<{ dim * hidden_dim }>(&mut weights_ptr),
+                    ff1: QuantizedTensor::from_ptr::<{ DIM * HIDDEN_DIM }>(&mut weights_ptr),
+                    ff2: QuantizedTensor::from_ptr::<{ HIDDEN_DIM * DIM }>(&mut weights_ptr),
+                    swiglu: QuantizedTensor::from_ptr::<{ DIM * HIDDEN_DIM }>(&mut weights_ptr),
                 })
             }
 
@@ -233,26 +233,26 @@ impl Model {
         }
 
         Model {
-            state: vec![0f32; dim],
+            state: vec![0f32; DIM],
             buffer: Buffer {
-                state: vec![0f32; dim],
+                state: vec![0f32; DIM],
                 qstate: QuantizedBuffer {
-                    values: vec![0i8; dim],
-                    scales: vec![0f32; dim / q_group_size],
+                    values: vec![0i8; DIM],
+                    scales: vec![0f32; DIM / Q_GROUP_SIZE],
                 },
-                query: vec![0f32; dim],
-                attention: vec![0f32; state_size],
-                swiglu: vec![0f32; hidden_dim],
-                ff_hidden: vec![0f32; hidden_dim],
+                query: vec![0f32; DIM],
+                attention: vec![0f32; STATE_SIZE],
+                swiglu: vec![0f32; HIDDEN_DIM],
+                ff_hidden: vec![0f32; HIDDEN_DIM],
                 qhidden: QuantizedBuffer {
-                    values: vec![0i8; hidden_dim],
-                    scales: vec![0f32; hidden_dim / q_group_size],
+                    values: vec![0i8; HIDDEN_DIM],
+                    scales: vec![0f32; HIDDEN_DIM / Q_GROUP_SIZE],
                 },
-                logits: vec![0f32; vocab_size],
+                logits: vec![0f32; VOCAB_SIZE],
             },
             cache: Cache {
-                key: vec![0f32; n_layers * state_size * kv_dim],
-                value: vec![0f32; n_layers * state_size * kv_dim],
+                key: vec![0f32; N_LAYERS * STATE_SIZE * KV_DIM],
+                value: vec![0f32; N_LAYERS * STATE_SIZE * KV_DIM],
             },
             weights: Weights {
                 embeddings,
@@ -269,35 +269,35 @@ impl Model {
     fn forward(&mut self, token: usize) {
         let pos = self.position;
         self.state
-            .copy_from_slice(&self.weights.embeddings[token * dim..(token + 1) * dim]);
+            .copy_from_slice(&self.weights.embeddings[token * DIM..(token + 1) * DIM]);
 
         for ((weights, layer_key_cache), layer_value_cache) in self
             .weights
             .layers
             .iter()
-            .zip(self.cache.key.chunks_exact_mut(state_size * kv_dim))
-            .zip(self.cache.value.chunks_exact_mut(state_size * kv_dim))
+            .zip(self.cache.key.chunks_exact_mut(STATE_SIZE * KV_DIM))
+            .zip(self.cache.value.chunks_exact_mut(STATE_SIZE * KV_DIM))
         {
             rmsnorm(&mut self.buffer.state, &self.state, weights.rms_attention);
             
             quantize(&mut self.buffer.qstate, &self.buffer.state);
             let mut qstate_tensor = self.buffer.qstate.to_tensor();
             matmul(&mut self.buffer.query, &weights.query, &qstate_tensor);
-            let offset = pos * kv_dim;
-            let key_cache = &mut layer_key_cache[offset..offset + kv_dim];
-            let value_cache = &mut layer_value_cache[offset..offset + kv_dim];
+            let offset = pos * KV_DIM;
+            let key_cache = &mut layer_key_cache[offset..offset + KV_DIM];
+            let value_cache = &mut layer_value_cache[offset..offset + KV_DIM];
             matmul(key_cache, &weights.key, &qstate_tensor);
             matmul(value_cache, &weights.value, &qstate_tensor);
 
-            let mut fcrs = [0f32; head_size];
-            let mut fcis = [0f32; head_size];
+            let mut fcrs = [0f32; HEAD_SIZE];
+            let mut fcis = [0f32; HEAD_SIZE];
             for (i, (fcr, fci)) in fcrs.iter_mut().zip(fcis.iter_mut()).enumerate() {
-                let frequency = 1f32 / 1000000f32.powf((i * 2) as f32 / head_size as f32);
+                let frequency = 1f32 / 1000000f32.powf((i * 2) as f32 / HEAD_SIZE as f32);
                 let value = pos as f32 * frequency;
                 *fcr = value.cos();
                 *fci = value.sin();
             }
-            for query_head in self.buffer.query.chunks_exact_mut(head_size) {
+            for query_head in self.buffer.query.chunks_exact_mut(HEAD_SIZE) {
                 for ((query_pair, fcr), fci) in query_head
                     .chunks_exact_mut(2)
                     .zip(fcrs.iter())
@@ -309,7 +309,7 @@ impl Model {
                     ]);
                 }
             }
-            for key_head in key_cache.chunks_exact_mut(head_size) {
+            for key_head in key_cache.chunks_exact_mut(HEAD_SIZE) {
                 for ((key_pair, fcr), fci) in key_head
                     .chunks_exact_mut(2)
                     .zip(fcrs.iter())
@@ -326,33 +326,33 @@ impl Model {
             for (h, (state_head, query_head)) in self
                 .buffer
                 .state
-                .chunks_exact_mut(head_size)
-                .zip(self.buffer.query.chunks_exact(head_size))
+                .chunks_exact_mut(HEAD_SIZE)
+                .zip(self.buffer.query.chunks_exact(HEAD_SIZE))
                 .enumerate()
             {
-                let offset = h * n_kv_heads / n_heads * head_size;
+                let offset = h * N_KV_HEADS / N_HEADS * HEAD_SIZE;
                 for (attention_x, pos_key_cache) in self.buffer.attention[0..=pos]
                     .iter_mut()
-                    .zip(layer_key_cache.chunks_exact(kv_dim))
+                    .zip(layer_key_cache.chunks_exact(KV_DIM))
                 {
                     let mut x = 0f32;
                     for (query_x, key_x) in query_head
                         .iter()
-                        .zip(pos_key_cache[offset..offset + head_size].iter())
+                        .zip(pos_key_cache[offset..offset + HEAD_SIZE].iter())
                     {
                         x += query_x * key_x
                     }
                     *attention_x = x;
                 }
-                smul(&mut self.buffer.attention, 1f32 / (head_size as f32).sqrt());
+                smul(&mut self.buffer.attention, 1f32 / (HEAD_SIZE as f32).sqrt());
                 softmax(&mut self.buffer.attention[..=pos]);
                 for (attention_x, pos_value_cache) in self.buffer.attention[0..=pos]
                     .iter()
-                    .zip(layer_value_cache.chunks_exact(kv_dim))
+                    .zip(layer_value_cache.chunks_exact(KV_DIM))
                 {
                     for (state_x, value_x) in state_head
                         .iter_mut()
-                        .zip(pos_value_cache[offset..offset + head_size].iter())
+                        .zip(pos_value_cache[offset..offset + HEAD_SIZE].iter())
                     {
                         *state_x += *attention_x * *value_x;
                     }
@@ -375,12 +375,12 @@ impl Model {
 
             quantize(&mut self.buffer.qstate, &self.buffer.state);
             qstate_tensor = self.buffer.qstate.to_tensor();
-            let mut expert_logits = [0f32; n_experts];
+            let mut expert_logits = [0f32; N_EXPERTS];
             matmul(&mut expert_logits, &weights.gate, &qstate_tensor);
             let mut indices_logits: Vec<_> = expert_logits.iter().enumerate().collect();
             indices_logits.sort_unstable_by(|(_, logit1), (_, logit2)| logit2.total_cmp(logit1));
             let (expert_indices, mut expert_weights): (Vec<_>, Vec<_>) =
-                indices_logits.into_iter().take(n_experts_per_token).unzip();
+                indices_logits.into_iter().take(N_EXPERTS_PER_TOKEN).unzip();
             softmax(&mut expert_weights);
 
             for (expert_index, expert_weight) in expert_indices.iter().zip(expert_weights) {
