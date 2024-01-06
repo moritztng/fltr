@@ -12,7 +12,7 @@ curl https://storage.googleapis.com/mixtral-model/model.tar.gz | tar -xz
 cargo run --release generate --model models/mixtral --prompt "Who is Satoshi Nakamoto?" --length 256 --autostop
 ```
 ## Server
-Adapt parameters in `config.toml` to your needs
+Adjust the parameters in `config.toml` to your needs
 ```bash
 cargo run --release server
 ```
