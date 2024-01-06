@@ -74,7 +74,6 @@ fn main() {
                 let mut stream = stream.unwrap();
                 let mut reader = BufReader::new(&mut stream);
                 let mut buffer = [0u8; 10000];
-                let mut output: Option<String> = None;
                 loop {
                     let mut headers = [httparse::EMPTY_HEADER; 64];
                     let mut request = httparse::Request::new(&mut headers);
@@ -88,16 +87,12 @@ fn main() {
                             .collect();
                         let (cache, postfix, output_len) = prompts.get(&query_args.get("prompt").unwrap().to_string()).unwrap();
                         let input = query_args.get("input").unwrap().to_string() + postfix;
-                        output = Some(model.generate(&input, *output_len, true, true, Some(cache)));
+                        let output = model.generate(&input, *output_len, true, true, Some(cache));
+                        let response = format!("HTTP/1.1 200 OK\r\n\r\n{output}");
+                        stream.write_all(response.as_bytes()).unwrap();
                         break;
                     }
                 }
-                let response = if let Some(output) = output {
-                    format!("HTTP/1.1 200 OK\r\n\r\n{output}")
-                } else {
-                    "HTTP/1.1 404 NOT FOUND".to_owned()
-                };
-                stream.write_all(response.as_bytes()).unwrap();
             }
         }
     }
