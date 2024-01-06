@@ -9,7 +9,7 @@ load_dotenv()
 
 OAI = "{http://www.openarchives.org/OAI/2.0/}"
 ARXIV = "{http://arxiv.org/OAI/arXiv/}"
-categories = {"cs.AI", "cs.LG", "cs.CL", "cs.CV"}
+categories = {"cs.CL"}
 token = None
 bigquery_client = bigquery.Client()
 

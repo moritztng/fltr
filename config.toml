@@ -14,5 +14,5 @@ Answer: yes or no
 Paper:
 """, postfix = """
 
-[/INST]""", output_len = 500 },
+[/INST]""", output_len = 100 },
 ]
