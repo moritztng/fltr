@@ -93,6 +93,7 @@ pub struct Model {
     weights: Weights,
     position: usize,
     tokenizer: Tokenizer,
+    #[allow(dead_code)]
     mmap: MmapRaw,
 }
 
