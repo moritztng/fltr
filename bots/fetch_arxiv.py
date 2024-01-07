@@ -41,8 +41,8 @@ while True:
             except:
                 print("llm connection error")
                 sleep(1)
-        output = output.split("Answer:")
-        explanation, answer = (output[0], "Answer:" + output[1]) if len(output) == 2 else (output[0], "")
+        output = output.split("Yes or No")
+        explanation, answer = output if len(output) == 2 else (output[0], "")
         classification = "yes" in answer.lower()
         errors = bigquery_client.insert_rows(bigquery_client.get_table("llamars.arxiv.arxiv"), [{"id": id, "date": date, "title": title, "abstract": abstract, "explanation": explanation, "answer": answer, "classification": classification}])
         if errors:

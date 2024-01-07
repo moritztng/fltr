@@ -5,14 +5,17 @@ model = "models/mixtral"
 port = 5000
 prompts = [
     { name = "papers", prefix = """
-[INST] Is the following paper better than existing methods on many tasks? You must answer either yes or no.
-
-Output Format:
-Explanation:
-Answer: yes or no
+[INST] Is the main topic of the following paper about running language models more efficiently?
 
 Paper:
 """, postfix = """
 
-[/INST]""", output_len = 100 },
+Answer Format:
+{
+    Explanation: _,
+    Yes or No: _,
+}
+
+Answer:
+[/INST]""", output_len = 256 },
 ]
