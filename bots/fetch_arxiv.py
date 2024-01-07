@@ -32,7 +32,7 @@ while True:
             continue
         id = arxiv.find(ARXIV + "id").text
         date = record.find(OAI + "header").find(OAI + "datestamp").text
-        title = arxiv.find(ARXIV + "title").text
+        title = " ".join(arxiv.find(ARXIV + "title").text.split())
         abstract = arxiv.find(ARXIV + "abstract").text
         while True:
             try:
