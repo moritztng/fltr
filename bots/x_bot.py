@@ -33,7 +33,7 @@ for row in rows:
         "POST",
         "https://api.twitter.com/2/tweets",
         json = {
-            "text": f"{row.title}\nhttps://arxiv.org/pdf/{row.id}.pdf"
+            "text": f"{row.title}\nhttps://arxiv.org/abs/{row.id}"
         },
         headers = {
             "Authorization": f"Bearer {access_token}",
