@@ -1,3 +1,4 @@
+Supports SIMD and multiple cores. I got 3 tok/s on cpu. The weights are memory mapped, so they stay in memory.
 # Installation
 ```bash
 git clone https://github.com/moritztng/mixtral.git
