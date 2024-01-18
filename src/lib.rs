@@ -145,53 +145,33 @@ fn dequantize(out: &mut [f32], x: &QuantizedSlice) {
 }
 
 fn matmul(out: &mut [f32], a: &QuantizedSlice, b: &QuantizedSlice, dim: usize) {
-    let b_dim = b.values.len() / dim;
     let n_groups_dim = dim / Q_GROUP_SIZE;
 
-    let mut b_t = QuantizedVector {
-        values: vec![0i8; b.values.len()],
-        scales: vec![0f32; b.values.len() / Q_GROUP_SIZE],
-    };
-    transpose(&mut b_t.values, b.values, dim);
-    transpose(&mut b_t.scales, b.scales, n_groups_dim);
-    let b = b_t.slice_full();
-
-    let mut out_t = vec![0f32; out.len()];
-    out_t
-        .par_chunks_exact_mut(b_dim)
-        .zip_eq(a.values.par_chunks_exact(dim))
-        .zip_eq(a.scales.par_chunks_exact(n_groups_dim))
-        .for_each(|((out_row, a_row), a_row_scales)| {
-            for (((a_row_group, b_rows), a_row_scale), b_row_scales) in a_row
-                .chunks_exact(Q_GROUP_SIZE)
-                .zip(b.values.chunks_exact(Q_GROUP_SIZE * b_dim))
-                .zip(a_row_scales.iter())
-                .zip(b.scales.chunks_exact(b_dim))
+    out.par_chunks_exact_mut(a.values.len() / dim)
+        .zip_eq(b.values.par_chunks_exact(dim))
+        .zip_eq(b.scales.par_chunks_exact(n_groups_dim))
+        .for_each(|((out_row, b_row), b_row_scales)| {
+            for ((out_x, a_row), a_row_scales) in out_row
+                .iter_mut()
+                .zip(a.values.chunks_exact(dim))
+                .zip(a.scales.chunks_exact(n_groups_dim))
             {
-                let mut out_group_acc = vec![0i32; b_dim];
-                for (a_x, b_row) in a_row_group.iter().zip(b_rows.chunks_exact(b_dim)) {
-                    for (out_group_acc_x, b_x) in out_group_acc.iter_mut().zip(b_row.iter()) {
-                        *out_group_acc_x += *a_x as i32 * *b_x as i32;
-                    }
-                }
-                for ((out_x, out_group_acc_x), b_scale) in out_row
-                    .iter_mut()
-                    .zip(out_group_acc.iter())
+                let mut x = 0f32;
+                for (((a_group, b_group), a_scale), b_scale) in a_row
+                    .chunks_exact(Q_GROUP_SIZE)
+                    .zip(b_row.chunks_exact(Q_GROUP_SIZE))
+                    .zip(a_row_scales.iter())
                     .zip(b_row_scales.iter())
                 {
-                    *out_x += *out_group_acc_x as f32 * a_row_scale * b_scale;
+                    let mut gx = 0i32;
+                    for (a_x, b_x) in a_group.iter().zip(b_group.iter()) {
+                        gx += *a_x as i32 * *b_x as i32;
+                    }
+                    x += gx as f32 * a_scale * b_scale;
                 }
+                *out_x = x;
             }
-        });
-    transpose(out, &out_t, b_dim);
-}
-
-fn transpose<A: Copy>(out: &mut [A], x: &[A], dim: usize) {
-    for (x_column_i, out_row) in out.chunks_exact_mut(out.len() / dim).enumerate() {
-        for (out_x, x_row) in out_row.iter_mut().zip(x.chunks_exact(dim)) {
-            *out_x = x_row[x_column_i];
-        }
-    }
+        })
 }
 
 fn smul(matrix: &mut [f32], scalar: f32) {
