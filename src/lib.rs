@@ -144,18 +144,17 @@ fn dequantize(out: &mut [f32], x: &QuantizedSlice) {
     }
 }
 
-fn matmul(out: &mut [f32], a: &QuantizedSlice, b: &QuantizedSlice, dim: usize) {
-    let n_groups_dim = dim / Q_GROUP_SIZE;
-
-    out.par_chunks_exact_mut(a.values.len() / dim)
-        .zip_eq(b.values.par_chunks_exact(dim))
-        .zip_eq(b.scales.par_chunks_exact(n_groups_dim))
-        .for_each(|((out_row, b_row), b_row_scales)| {
-            for ((out_x, a_row), a_row_scales) in out_row
-                .iter_mut()
-                .zip(a.values.chunks_exact(dim))
-                .zip(a.scales.chunks_exact(n_groups_dim))
-            {
+fn matmul<const A: usize, const N: usize>(out: &mut [f32], a: &QuantizedSlice, b: &QuantizedSlice) {
+    for ((out_row, b_row), b_row_scales) in out
+        .chunks_exact_mut(A)
+        .zip(b.values.chunks_exact(N))
+        .zip(b.scales.chunks_exact(N / Q_GROUP_SIZE))
+    {
+        out_row
+            .par_iter_mut()
+            .zip_eq(a.values.par_chunks_exact(N))
+            .zip_eq(a.scales.par_chunks_exact(N / Q_GROUP_SIZE))
+            .for_each(|((out_x, a_row), a_row_scales)| {
                 let mut x = 0f32;
                 for (((a_group, b_group), a_scale), b_scale) in a_row
                     .chunks_exact(Q_GROUP_SIZE)
@@ -170,8 +169,8 @@ fn matmul(out: &mut [f32], a: &QuantizedSlice, b: &QuantizedSlice, dim: usize) {
                     x += gx as f32 * a_scale * b_scale;
                 }
                 *out_x = x;
-            }
-        })
+            });
+    }
 }
 
 fn smul(matrix: &mut [f32], scalar: f32) {
@@ -341,13 +340,13 @@ impl Model {
 
             quantize(&mut buffer.qstate, &buffer.state2);
             let qstate_tensor = buffer.qstate.slice_full();
-            matmul(&mut buffer.query, &weights.query, &qstate_tensor, DIM);
+            matmul::<DIM, DIM>(&mut buffer.query, &weights.query, &qstate_tensor);
             let offset = pos * KV_DIM;
             let batch_kv_dim = batch_size * KV_DIM;
             let key_cache = &mut layer_key_cache[offset..offset + batch_kv_dim];
             let value_cache = &mut layer_value_cache[offset..offset + batch_kv_dim];
-            matmul(key_cache, &weights.key, &qstate_tensor, DIM);
-            matmul(value_cache, &weights.value, &qstate_tensor, DIM);
+            matmul::<KV_DIM, DIM>(key_cache, &weights.key, &qstate_tensor);
+            matmul::<KV_DIM, DIM>(value_cache, &weights.value, &qstate_tensor);
             for ((p, token_query), token_key_cache) in buffer
                 .query
                 .chunks_exact_mut(DIM)
@@ -432,11 +431,10 @@ impl Model {
             }
 
             quantize(&mut buffer.qstate, &buffer.state2);
-            matmul(
+            matmul::<DIM, DIM>(
                 &mut buffer.state2,
                 &weights.heads,
                 &buffer.qstate.slice_full(),
-                DIM,
             );
             add(&mut buffer.state, &buffer.state2);
 
@@ -448,11 +446,10 @@ impl Model {
             );
 
             quantize(&mut buffer.qstate, &buffer.state2);
-            matmul(
+            matmul::<N_EXPERTS, DIM>(
                 &mut buffer.expert_logits,
                 &weights.gate,
                 &buffer.qstate.slice_full(),
-                DIM,
             );
 
             let mut expert_tokens: [Vec<(usize, f32)>; 8] = Default::default();
@@ -506,18 +503,17 @@ impl Model {
                 let expert_qstate = buffer.qstate2.slice(0, n_tokens * DIM);
                 let expert_ff_hidden = &mut buffer.ff_hidden[..n_tokens * HIDDEN_DIM];
                 let expert_swiglu = &mut buffer.swiglu[..n_tokens * HIDDEN_DIM];
-                matmul(expert_ff_hidden, &expert.ff1, &expert_qstate, DIM);
-                matmul(expert_swiglu, &expert.swiglu, &expert_qstate, DIM);
+                matmul::<HIDDEN_DIM, DIM>(expert_ff_hidden, &expert.ff1, &expert_qstate);
+                matmul::<HIDDEN_DIM, DIM>(expert_swiglu, &expert.swiglu, &expert_qstate);
                 for (hidden_x, swiglu_x) in expert_ff_hidden.iter_mut().zip(expert_swiglu.iter()) {
                     *hidden_x *= 1f32 / (1f32 + (-*hidden_x).exp());
                     *hidden_x *= swiglu_x;
                 }
                 quantize(&mut buffer.qhidden, &expert_ff_hidden);
-                matmul(
+                matmul::<DIM, HIDDEN_DIM>(
                     &mut buffer.state2[..n_tokens * DIM],
                     &expert.ff2,
                     &buffer.qhidden.slice(0, n_tokens * HIDDEN_DIM),
-                    HIDDEN_DIM,
                 );
                 for (token_state, (token_index, weight)) in buffer.state2[..n_tokens * DIM]
                     .chunks_exact_mut(DIM)
@@ -544,11 +540,10 @@ impl Model {
         );
 
         quantize(&mut buffer.qstate, &buffer.state2);
-        matmul(
+        matmul::<VOCAB_SIZE, DIM>(
             &mut buffer.logits,
             &self.weights.output,
             &buffer.qstate.slice_full(),
-            DIM,
         );
 
         self.position += batch_size;
