@@ -1,4 +1,6 @@
-Supports SIMD and multiple cores. I got 3 tok/s on cpu. The weights are memory mapped, so they stay in memory.
+Supports SIMD and multiple cores. I got 5.7 tokens/second on CPU. It requires ~48GB of memory for fast inference - otherwise it's slower.
+
+Sharing the weights via google cloud was too expensive for me. So downloading the weights doesn't work currently. I'll update the link soon.
 # Installation
 ```bash
 git clone https://github.com/moritztng/mixtral.git
