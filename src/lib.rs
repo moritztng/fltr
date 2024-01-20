@@ -145,22 +145,25 @@ fn dequantize(out: &mut [f32], x: &QuantizedSlice) {
 }
 
 fn matmul<const N: usize, const B: usize>(out: &mut [f32], a: &QuantizedSlice, b: &QuantizedSlice) {
-    for ((out_row, a_row), a_row_scales) in out
-        .chunks_exact_mut(B)
-        .zip(a.values.chunks_exact(N))
-        .zip(a.scales.chunks_exact(N / Q_GROUP_SIZE))
-    {
-        out_row
-            .par_iter_mut()
-            .zip_eq(b.values.par_chunks_exact(N))
-            .zip_eq(b.scales.par_chunks_exact(N / Q_GROUP_SIZE))
-            .for_each(|((out_x, b_row), b_row_scales)| {
+    let batch_size = a.values.len() / N;
+    let mut out_t = vec![0f32; out.len()];
+
+    out_t
+        .par_chunks_exact_mut(batch_size)
+        .zip_eq(b.values.par_chunks_exact(N))
+        .zip_eq(b.scales.par_chunks_exact(N / Q_GROUP_SIZE))
+        .for_each(|((out_column, b_column), b_column_scales)| {
+            for ((out_x, a_row), a_row_scales) in out_column
+                .iter_mut()
+                .zip(a.values.chunks_exact(N))
+                .zip(a.scales.chunks_exact(N / Q_GROUP_SIZE))
+            {
                 let mut x = 0f32;
                 for (((a_group, b_group), a_scale), b_scale) in a_row
                     .chunks_exact(Q_GROUP_SIZE)
-                    .zip(b_row.chunks_exact(Q_GROUP_SIZE))
+                    .zip(b_column.chunks_exact(Q_GROUP_SIZE))
                     .zip(a_row_scales.iter())
-                    .zip(b_row_scales.iter())
+                    .zip(b_column_scales.iter())
                 {
                     let mut gx = 0i32;
                     for (a_x, b_x) in a_group.iter().zip(b_group.iter()) {
@@ -169,7 +172,13 @@ fn matmul<const N: usize, const B: usize>(out: &mut [f32], a: &QuantizedSlice, b
                     x += gx as f32 * a_scale * b_scale;
                 }
                 *out_x = x;
-            });
+            }
+        });
+        
+    for (out_t_column_i, out_row) in out.chunks_exact_mut(B).enumerate() {
+        for (out_x, out_t_row) in out_row.iter_mut().zip(out_t.chunks_exact(batch_size)) {
+            *out_x = out_t_row[out_t_column_i];
+        }
     }
 }
 
