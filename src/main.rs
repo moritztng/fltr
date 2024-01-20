@@ -17,7 +17,7 @@ struct Prompt {
 
 #[derive(Deserialize)]
 struct Server {
-    model: String,
+    weights: String,
     port: u16,
     prompts: Vec<Prompt>,
 }
@@ -38,7 +38,7 @@ struct Args {
 enum Commands {
     Generate {
         #[arg(long)]
-        model: String,
+        weights: String,
         #[arg(long)]
         prompt: String,
         #[arg(long, default_value_t = 256)]
@@ -54,17 +54,17 @@ fn main() {
 
     match args.command {
         Commands::Generate {
-            model,
+            weights,
             prompt,
             length,
             autostop,
         } => {
-            let mut model = Model::from_dir(Path::new(&model));
+            let mut model = Model::from_dir(Path::new(&weights));
             model.generate(&prompt, length, true, autostop, None);
         }
         Commands::Server => {
             let config: Config = toml::from_str(&fs::read_to_string("config.toml").unwrap()).unwrap();
-            let mut model = Model::from_dir(Path::new(&config.server.model));
+            let mut model = Model::from_dir(Path::new(&config.server.weights));
             let mut prompts = HashMap::new();
             for prompt in config.server.prompts {
                 prompts.insert(prompt.name, (model.compile(&prompt.prefix), prompt.postfix, prompt.output_len));

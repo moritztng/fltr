@@ -1,18 +1,17 @@
 Supports SIMD and multiple cores. I got 5.7 tokens/second on CPU. It requires ~48GB of memory for fast inference - otherwise it's slower.
 
-Sharing the weights via google cloud was too expensive for me. So downloading the weights doesn't work currently. I'll update the link soon.
 # Installation
 ```bash
 git clone https://github.com/moritztng/mixtral.git
 cd mixtral
 # Download 8 bit quantized weights
-curl https://storage.googleapis.com/mixtral-model/model.tar.gz | tar -xz
+curl --create-dirs -o weights/weights.bin -o weights/tokenizer.json -L https://huggingface.co/moritztng/Mixtral-8x7B-Instruct-v0.1/resolve/main/{weights.bin,tokenizer.json}
 ```
 
 # Quickstart
 ## Command Line Interface
 ```bash
-cargo run --release generate --model models/mixtral --prompt "Who is Satoshi Nakamoto?" --length 256 --autostop
+cargo run --release generate --weights weights --prompt "Who is Satoshi Nakamoto?" --length 256 --autostop
 ```
 ## Server
 Adjust the parameters in `config.toml` to your needs
