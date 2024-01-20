@@ -1,4 +1,4 @@
-Supports SIMD and multiple cores. I got 5.7 tokens/second on CPU. It requires ~48GB of memory for fast inference - otherwise it's slower.
+Supports SIMD and multiple cores. I got 8 tokens/second on CPU. It requires ~48GB of memory for fast inference - otherwise it's slower.
 
 # Installation
 ```bash
