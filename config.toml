@@ -10,12 +10,7 @@ prompts = [
 Paper:
 """, postfix = """
 
-Answer Format:
-{
-    Explanation: _,
-    Yes or No: _,
-}
+Answer: Yes or No
 
-Answer:
-[/INST]""", output_len = 256 },
+Answer:[/INST]""", output_len = 1 },
 ]

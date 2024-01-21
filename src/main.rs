@@ -60,7 +60,7 @@ fn main() {
             autostop,
         } => {
             let mut model = Model::from_dir(Path::new(&weights));
-            model.generate(&prompt, length, true, autostop, None);
+            model.generate(&prompt, length - 1, true, autostop, None);
         }
         Commands::Server => {
             let config: Config = toml::from_str(&fs::read_to_string("config.toml").unwrap()).unwrap();
@@ -87,7 +87,7 @@ fn main() {
                             .collect();
                         let (cache, postfix, output_len) = prompts.get(&query_args.get("prompt").unwrap().to_string()).unwrap();
                         let input = query_args.get("input").unwrap().to_string() + postfix;
-                        let output = model.generate(&input, *output_len, true, true, Some(cache));
+                        let output = model.generate(&input, *output_len - 1, true, true, Some(cache));
                         let response = format!("HTTP/1.1 200 OK\r\n\r\n{output}");
                         stream.write_all(response.as_bytes()).unwrap();
                         break;

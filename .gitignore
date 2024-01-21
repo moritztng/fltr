@@ -1,6 +1,6 @@
+*.db
 env
 target
 weights
-service_account.json
 .env
 refresh_token

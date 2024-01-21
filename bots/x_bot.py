@@ -1,13 +1,14 @@
-import os, requests
+import os, requests, sqlite3
 from base64 import b64encode
 from dotenv import load_dotenv
-from google.cloud import bigquery
+
+db = sqlite3.connect("data.db")
+db_cursor = db.cursor()
+db_cursor.execute("CREATE TABLE IF NOT EXISTS posts(id)")
 
 load_dotenv()
 client_id = os.environ["CLIENT_ID"]
 client_secret = os.environ["CLIENT_SECRET"]
-
-bigquery_client = bigquery.Client()
 
 with open("refresh_token", "r+") as f:
     refresh_token = f.read()
@@ -26,19 +27,19 @@ with open("refresh_token", "r+") as f:
     f.write(response["refresh_token"])
     access_token = response["access_token"]
 
-rows = bigquery_client.query("SELECT id, title FROM llamars.arxiv.arxiv LEFT JOIN llamars.arxiv.posts posts USING(id) WHERE posts.id IS NULL AND classification = true").result()
-
-for row in rows:
+rows = db_cursor.execute("SELECT id, title FROM arxiv LEFT JOIN posts USING(id) WHERE posts.id IS NULL AND classification = true")
+for (id, title) in rows:
     response = requests.request(
         "POST",
         "https://api.twitter.com/2/tweets",
         json = {
-            "text": f"{row.title}\nhttps://arxiv.org/abs/{row.id}"
+            "text": f"{title}\nhttps://arxiv.org/abs/{id}"
         },
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
         },
     )
-    bigquery_client.insert_rows(bigquery_client.get_table("llamars.arxiv.posts"), [{"id": row.id}])
-    print(row, response.text)
+    db_cursor.execute("INSERT INTO posts VALUES (?)", (id,))
+    db.commit()
+    print((id, title), response.text)

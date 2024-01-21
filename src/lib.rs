@@ -174,7 +174,7 @@ fn matmul<const N: usize, const B: usize>(out: &mut [f32], a: &QuantizedSlice, b
                 *out_x = x;
             }
         });
-        
+
     for (out_t_column_i, out_row) in out.chunks_exact_mut(B).enumerate() {
         for (out_x, out_t_row) in out_row.iter_mut().zip(out_t.chunks_exact(batch_size)) {
             *out_x = out_t_row[out_t_column_i];
@@ -600,6 +600,13 @@ impl Model {
             .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
             .unwrap()
             .0 as u32;
+        if print {
+            print!(
+                "{}",
+                self.tokenizer.id_to_token(token).unwrap().replace("▁", " ")
+            );
+            stdout().flush().unwrap();
+        }
         let mut output_tokens = Vec::new();
         output_tokens.push(token);
 
@@ -607,13 +614,6 @@ impl Model {
 
         start_time = Instant::now();
         for _ in 0..steps {
-            if print {
-                print!(
-                    "{}",
-                    self.tokenizer.id_to_token(token).unwrap().replace("▁", " ")
-                );
-                stdout().flush().unwrap();
-            }
             if autostop && token == 2 {
                 break;
             }
@@ -625,14 +625,24 @@ impl Model {
                 .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
                 .unwrap()
                 .0 as u32;
+            if print {
+                print!(
+                    "{}",
+                    self.tokenizer.id_to_token(token).unwrap().replace("▁", " ")
+                );
+                stdout().flush().unwrap();
+            }
             output_tokens.push(token);
         }
 
         if print {
-            println!(
-                "\ndecode tokens/sec: {}",
-                steps as f32 / start_time.elapsed().as_secs_f32()
-            );
+            if steps > 0 {
+                print!(
+                    "\ndecode tokens/sec: {}",
+                    steps as f32 / start_time.elapsed().as_secs_f32()
+                );
+            }
+            print!("\n\n");
         }
 
         self.tokenizer.decode(&output_tokens, false).unwrap()
