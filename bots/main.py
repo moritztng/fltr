@@ -114,22 +114,24 @@ async def post_x():
 async def schedule(start: datetime, interval: timedelta, task: Callable[[None], None]):
     while True:
         delay = int((start - datetime.now()).total_seconds())
-        await asyncio.sleep(delay if delay >= 0 else delay % interval.seconds)
+        await asyncio.sleep(
+            delay if delay >= 0 else delay % int(interval.total_seconds())
+        )
         await task()
 
 
 async def main():
-    p = subprocess.Popen(["cargo", "run", "--release", "server"])
+    subprocess.Popen(["cargo", "run", "--release", "server"])
 
-    task1 = asyncio.create_task(
-        schedule(datetime(2024, 1, 23, 1, 26, 00), timedelta(minutes=1), fetch_arxiv)
+    fetch_arxiv_task = asyncio.create_task(
+        schedule(datetime(2024, 1, 23, 3, 53, 00), timedelta(days=1), fetch_arxiv)
     )
-    task2 = asyncio.create_task(
-        schedule(datetime(2024, 1, 23, 1, 26, 00), timedelta(minutes=1), post_x)
+    post_x_task = asyncio.create_task(
+        schedule(datetime(2024, 1, 25, 1, 26, 00), timedelta(days=1), post_x)
     )
 
-    await task1
-    await task2
+    await fetch_arxiv_task
+    await post_x_task
 
 
 asyncio.run(main())
