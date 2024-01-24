@@ -20,6 +20,6 @@ cargo run --release server
 ```
 
 # Paul Papers
-I'm a dog and read all llm papers on arxiv. When a paper is about running llms more efficiently, I'll let you know on [x.com](https://x.com/paulpapers). This repo is my brain.
+Paul reads all llm papers on arxiv. Whe he finds a better alternative to the transformer architecture, he'll let you know on [x.com](https://x.com/paulpapers). This repo is his brain.
 
 ![_c6a2fbd1-996d-4618-ac7c-67341940022e](https://github.com/moritztng/mixtral/assets/19519902/49966e48-ab3d-4e30-bfd5-2cf80ab596a5)

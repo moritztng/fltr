@@ -9,6 +9,8 @@ db = sqlite3.connect("data.db")
 
 
 async def fetch_arxiv():
+    subprocess.Popen(["target/release/mixtral", "server"])
+
     db_cursor = db.cursor()
     db_cursor.execute(
         "CREATE TABLE IF NOT EXISTS arxiv(id, date, title, abstract, answer, classification)"
@@ -66,6 +68,9 @@ async def fetch_arxiv():
         if token is None or token.text is None:
             break
 
+    await asyncio.sleep(420)
+    os.system("shutdown -h now")
+
 
 async def post_x():
     db_cursor = db.cursor()
@@ -121,13 +126,11 @@ async def schedule(start: datetime, interval: timedelta, task: Callable[[None], 
 
 
 async def main():
-    subprocess.Popen(["cargo", "run", "--release", "server"])
-
     fetch_arxiv_task = asyncio.create_task(
-        schedule(datetime(2024, 1, 23, 3, 53, 00), timedelta(days=1), fetch_arxiv)
+        schedule(datetime(2024, 1, 24, 6, 00, 00), timedelta(days=1), fetch_arxiv)
     )
     post_x_task = asyncio.create_task(
-        schedule(datetime(2024, 1, 25, 1, 26, 00), timedelta(days=1), post_x)
+        schedule(datetime(2024, 1, 24, 6, 00, 00), timedelta(minutes=5), post_x)
     )
 
     await fetch_arxiv_task

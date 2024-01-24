@@ -5,7 +5,7 @@ weights = "weights"
 port = 5000
 prompts = [
     { name = "papers", prefix = """
-[INST] Is the main topic of the following paper about a new neural network architecture and compares it to the transformer architecture?
+[INST] Is the main topic of the following paper about a new neural network architecture that is better than the transformer architecture?
 
 Paper:
 """, postfix = """
