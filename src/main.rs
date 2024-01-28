@@ -2,8 +2,11 @@ use clap::{Parser, Subcommand};
 use mixtral::Model;
 use serde::Deserialize;
 use std::{
+    collections::HashMap,
+    fs,
     io::{prelude::*, BufReader},
-    net::TcpListener, fs, collections::HashMap, path::Path,
+    net::TcpListener,
+    path::Path,
 };
 use url::Url;
 
@@ -46,7 +49,7 @@ enum Commands {
         #[arg(long)]
         autostop: bool,
     },
-    Server
+    Server,
 }
 
 fn main() {
@@ -63,11 +66,19 @@ fn main() {
             model.generate(&prompt, length - 1, true, autostop, None);
         }
         Commands::Server => {
-            let config: Config = toml::from_str(&fs::read_to_string("config.toml").unwrap()).unwrap();
+            let config: Config =
+                toml::from_str(&fs::read_to_string("config.toml").unwrap()).unwrap();
             let mut model = Model::from_dir(Path::new(&config.server.weights));
             let mut prompts = HashMap::new();
             for prompt in config.server.prompts {
-                prompts.insert(prompt.name, (model.compile(&prompt.prefix), prompt.postfix, prompt.output_len));
+                prompts.insert(
+                    prompt.name,
+                    (
+                        model.compile(&prompt.prefix),
+                        prompt.postfix,
+                        prompt.output_len,
+                    ),
+                );
             }
             let listener = TcpListener::bind(("127.0.0.1", config.server.port)).unwrap();
             for stream in listener.incoming() {
@@ -82,12 +93,13 @@ fn main() {
                         let url_parts: Vec<&str> = request.path.unwrap().split('?').collect();
                         let mut url = Url::from_file_path(url_parts[0]).unwrap();
                         url.set_query(Some(url_parts[1]));
-                        let query_args: HashMap<_, _> = url
-                            .query_pairs()
-                            .collect();
-                        let (cache, postfix, output_len) = prompts.get(&query_args.get("prompt").unwrap().to_string()).unwrap();
+                        let query_args: HashMap<_, _> = url.query_pairs().collect();
+                        let (cache, postfix, output_len) = prompts
+                            .get(&query_args.get("prompt").unwrap().to_string())
+                            .unwrap();
                         let input = query_args.get("input").unwrap().to_string() + postfix;
-                        let output = model.generate(&input, *output_len - 1, true, true, Some(cache));
+                        let output =
+                            model.generate(&input, *output_len - 1, true, true, Some(cache));
                         let response = format!("HTTP/1.1 200 OK\r\n\r\n{output}");
                         stream.write_all(response.as_bytes()).unwrap();
                         break;

@@ -12,3 +12,9 @@ serde = { version = "1.0.193", features = ["derive"] }
 url = "2.5.0"
 httparse = "1.8.0"
 toml = "0.8.8"
+
+[build-dependencies]
+cc = "1.0.83"
+
+[features]
+cuda = []

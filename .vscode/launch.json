@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["generate", "--model=models/mixtral", "--prompt=\"Once upon a time\""],
+            "args": ["generate", "--weights=weights", "--prompt=\"Once upon a time\""],
             "cwd": "${workspaceFolder}"
         },
         {

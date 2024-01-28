@@ -1,5 +1,6 @@
 use core::slice::from_raw_parts;
 use memmap2::{MmapOptions, MmapRaw};
+#[cfg(not(feature = "cuda"))]
 use rayon::prelude::*;
 use std::{
     fs::File,
@@ -116,6 +117,22 @@ pub struct Model {
     mmap: MmapRaw,
 }
 
+#[cfg(feature = "cuda")]
+extern "C" {
+    fn cuda_init();
+    fn cuda_matmul(
+        out: *const f32,
+        a_h_quants: *const i8,
+        b_h_quants: *const i8,
+        a_h_scales: *const f32,
+        b_h_scales: *const f32,
+        a: u32,
+        b: u32,
+        n: u32,
+        group_size: u16,
+    );
+}
+
 fn quantize(out: &mut QuantizedVector, x: &[f32]) {
     const Q_MAX: f32 = 127f32;
     for ((out_group, x_group), scale) in out
@@ -147,7 +164,21 @@ fn dequantize(out: &mut [f32], x: &QuantizedSlice) {
 fn matmul<const N: usize, const B: usize>(out: &mut [f32], a: &QuantizedSlice, b: &QuantizedSlice) {
     let batch_size = a.values.len() / N;
     let mut out_t = vec![0f32; out.len()];
-
+    #[cfg(feature = "cuda")]
+    unsafe {
+        cuda_matmul(
+            out_t.as_mut_ptr(),
+            a.values.as_ptr(),
+            b.values.as_ptr(),
+            a.scales.as_ptr(),
+            b.scales.as_ptr(),
+            (a.values.len() / N) as u32,
+            B as u32,
+            N as u32,
+            Q_GROUP_SIZE as u16,
+        );
+    };
+    #[cfg(not(feature = "cuda"))]
     out_t
         .par_chunks_exact_mut(batch_size)
         .zip_eq(b.values.par_chunks_exact(N))
@@ -256,6 +287,10 @@ impl Buffer {
 
 impl Model {
     pub fn from_dir(path: &Path) -> Model {
+        #[cfg(feature = "cuda")]
+        unsafe {
+            cuda_init()
+        };
         let mmap: MmapRaw = MmapOptions::new()
             .map_raw_read_only(&File::open(path.join("weights.bin")).unwrap())
             .unwrap();
