@@ -42,8 +42,8 @@ enum Commands {
     Generate {
         #[arg(long)]
         weights: String,
-        #[arg(long)]
-        prompt: String,
+        #[arg(long, value_delimiter = ',')]
+        prompts: Vec<String>,
         #[arg(long, default_value_t = 256)]
         length: usize,
         #[arg(long)]
@@ -54,16 +54,15 @@ enum Commands {
 
 fn main() {
     let args = Args::parse();
-
     match args.command {
         Commands::Generate {
             weights,
-            prompt,
+            prompts,
             length,
             autostop,
         } => {
             let mut model = Model::from_dir(Path::new(&weights));
-            model.generate(&prompt, length - 1, true, autostop, None);
+            model.generate(&prompts, length - 1, true, autostop, None);
         }
         Commands::Server => {
             let config: Config =
@@ -71,10 +70,11 @@ fn main() {
             let mut model = Model::from_dir(Path::new(&config.server.weights));
             let mut prompts = HashMap::new();
             for prompt in config.server.prompts {
+                let (cache, _) = model.generate(&[prompt.prefix], 0, true, false, None);
                 prompts.insert(
                     prompt.name,
                     (
-                        model.compile(&prompt.prefix),
+                        cache,
                         prompt.postfix,
                         prompt.output_len,
                     ),
@@ -84,7 +84,7 @@ fn main() {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let mut reader = BufReader::new(&mut stream);
-                let mut buffer = [0u8; 10000];
+                let mut buffer = [0u8; 100000];
                 loop {
                     let mut headers = [httparse::EMPTY_HEADER; 64];
                     let mut request = httparse::Request::new(&mut headers);
@@ -97,10 +97,10 @@ fn main() {
                         let (cache, postfix, output_len) = prompts
                             .get(&query_args.get("prompt").unwrap().to_string())
                             .unwrap();
-                        let input = query_args.get("input").unwrap().to_string() + postfix;
-                        let output =
-                            model.generate(&input, *output_len - 1, true, true, Some(cache));
-                        let response = format!("HTTP/1.1 200 OK\r\n\r\n{output}");
+                        let input = query_args.get("input").unwrap().to_string();
+                        let prompts: Vec<_> = input.split("<inputsep>").map(|x|x.to_owned() + postfix).collect();
+                        let (_, outputs) = model.generate(&prompts, *output_len - 1, true, false, Some(cache));
+                        let response = format!("HTTP/1.1 200 OK\r\n\r\n{}", outputs.join(","));
                         stream.write_all(response.as_bytes()).unwrap();
                         break;
                     }

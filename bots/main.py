@@ -26,6 +26,8 @@ async def fetch_arxiv():
         (datetime.now() - timedelta(3)).date()
     )  # str(max_date + timedelta(1) if max_date else (datetime.now() - timedelta(1)).date())
 
+    batch_size = 10
+    papers_batch = []
     while True:
         url = "https://export.arxiv.org/oai2?verb=ListRecords&"
         if token is None:
@@ -34,7 +36,8 @@ async def fetch_arxiv():
             url += "resumptionToken=" + token.text
         tree = ET.fromstring(requests.get(url).text)
         list_records = tree.find(OAI + "ListRecords")
-        for i, record in enumerate(list_records.findall(OAI + "record")):
+        records = list_records.findall(OAI + "record")
+        for i, record in enumerate(records):
             print(i)
             arxiv = record.find(OAI + "metadata").find(ARXIV + "arXiv")
             paper_categories = set(arxiv.find(ARXIV + "categories").text.split())
@@ -47,22 +50,26 @@ async def fetch_arxiv():
             date = record.find(OAI + "header").find(OAI + "datestamp").text
             title = " ".join(arxiv.find(ARXIV + "title").text.split())
             abstract = arxiv.find(ARXIV + "abstract").text
-            while True:
-                try:
-                    answer = requests.get(
-                        "http://localhost:5000",
-                        params={"prompt": "papers", "input": f"{title}\n{abstract}"},
-                    ).text
-                    break
-                except:
-                    print("llm connection error")
-                    await asyncio.sleep(1)
-            classification = "yes" == answer.lower()
-            db_cursor.execute(
-                "INSERT INTO arxiv VALUES (?, ?, ?, ?, ?, ?)",
-                (id, date, title, abstract, answer, classification),
-            )
-            db.commit()
+            papers_batch.append((id, date, title, abstract))
+            if len(papers_batch) == batch_size or len(records) - i < batch_size:
+                while True:
+                    try:
+                        answers = requests.get(
+                            "http://localhost:5000",
+                            params={"prompt": "papers", "input": "<inputsep>".join([f"{title}\n{abstract}" for (_, _, title, abstract) in papers_batch])},
+                        ).text
+                        break
+                    except:
+                        print("llm connection error")
+                        await asyncio.sleep(1)
+                for ((id, date, title, abstract), answer) in zip(papers_batch, answers.split(",")):
+                    classification = "yes" == answer.lower()
+                    db_cursor.execute(
+                        "INSERT INTO arxiv VALUES (?, ?, ?, ?, ?, ?)",
+                        (id, date, title, abstract, answer, classification),
+                    )
+                    db.commit()
+                papers_batch = []
 
         token = list_records.find(OAI + "resumptionToken")
         if token is None or token.text is None:
