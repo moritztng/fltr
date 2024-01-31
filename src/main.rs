@@ -84,7 +84,7 @@ fn main() {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let mut reader = BufReader::new(&mut stream);
-                let mut buffer = [0u8; 100000];
+                let mut buffer = [0u8; 1000000];
                 loop {
                     let mut headers = [httparse::EMPTY_HEADER; 64];
                     let mut request = httparse::Request::new(&mut headers);

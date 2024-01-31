@@ -26,7 +26,7 @@ async def fetch_arxiv():
         (datetime.now() - timedelta(3)).date()
     )  # str(max_date + timedelta(1) if max_date else (datetime.now() - timedelta(1)).date())
 
-    batch_size = 10
+    batch_size = 20
     papers_batch = []
     while True:
         url = "https://export.arxiv.org/oai2?verb=ListRecords&"
@@ -38,7 +38,6 @@ async def fetch_arxiv():
         list_records = tree.find(OAI + "ListRecords")
         records = list_records.findall(OAI + "record")
         for i, record in enumerate(records):
-            print(i)
             arxiv = record.find(OAI + "metadata").find(ARXIV + "arXiv")
             paper_categories = set(arxiv.find(ARXIV + "categories").text.split())
             if (
@@ -47,6 +46,10 @@ async def fetch_arxiv():
             ):
                 continue
             id = arxiv.find(ARXIV + "id").text
+            db_cursor.execute("SELECT id FROM arxiv WHERE id = ?", (id,))
+            if db_cursor.fetchone():
+                print("already exists")
+                continue
             date = record.find(OAI + "header").find(OAI + "datestamp").text
             title = " ".join(arxiv.find(ARXIV + "title").text.split())
             abstract = arxiv.find(ARXIV + "abstract").text
@@ -56,14 +59,25 @@ async def fetch_arxiv():
                     try:
                         answers = requests.get(
                             "http://localhost:5000",
-                            params={"prompt": "papers", "input": "<inputsep>".join([f"{title}\n{abstract}" for (_, _, title, abstract) in papers_batch])},
+                            params={
+                                "prompt": "papers",
+                                "input": "<inputsep>".join(
+                                    [
+                                        f"{title}\n{abstract}"
+                                        for (_, _, title, abstract) in papers_batch
+                                    ]
+                                ),
+                            },
                         ).text
                         break
                     except:
                         print("llm connection error")
                         await asyncio.sleep(1)
-                for ((id, date, title, abstract), answer) in zip(papers_batch, answers.split(",")):
+                for (id, date, title, abstract), answer in zip(
+                    papers_batch, answers.split(",")
+                ):
                     classification = "yes" == answer.lower()
+                    print(id, date, title, answer, classification)
                     db_cursor.execute(
                         "INSERT INTO arxiv VALUES (?, ?, ?, ?, ?, ?)",
                         (id, date, title, abstract, answer, classification),
