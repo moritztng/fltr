@@ -23,7 +23,7 @@ async def fetch_arxiv():
 
     # max_date = next(bigquery_client.query("SELECT MAX(date) AS max_date from llamars.arxiv.arxiv").result(), None).max_date
     from_date = str(
-        (datetime.now() - timedelta(3)).date()
+        (datetime.now() - timedelta(4)).date()
     )  # str(max_date + timedelta(1) if max_date else (datetime.now() - timedelta(1)).date())
 
     batch_size = 20
@@ -88,6 +88,7 @@ async def fetch_arxiv():
         token = list_records.find(OAI + "resumptionToken")
         if token is None or token.text is None:
             break
+        await asyncio.sleep(10)
 
     await asyncio.sleep(420)
     os.system("shutdown -h now")
@@ -148,10 +149,10 @@ async def schedule(start: datetime, interval: timedelta, task: Callable[[None], 
 
 async def main():
     fetch_arxiv_task = asyncio.create_task(
-        schedule(datetime(2024, 1, 24, 6, 00, 00), timedelta(days=1), fetch_arxiv)
+        schedule(datetime(2024, 1, 24, 11, 00, 00), timedelta(days=1), fetch_arxiv)
     )
     post_x_task = asyncio.create_task(
-        schedule(datetime(2024, 1, 24, 6, 00, 00), timedelta(minutes=5), post_x)
+        schedule(datetime(2024, 1, 24, 11, 00, 00), timedelta(minutes=5), post_x)
     )
 
     await fetch_arxiv_task
