@@ -1,6 +1,2 @@
-*.db
-env
 target
 weights
-.env
-refresh_token
