@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'mixtral'",
+            "name": "Debug executable 'fltr'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=mixtral",
-                    "--package=mixtral"
+                    "--bin=fltr",
+                    "--package=fltr"
                 ],
                 "filter": {
-                    "name": "mixtral",
+                    "name": "fltr",
                     "kind": "bin"
                 }
             },
@@ -25,16 +25,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'mixtral'",
+            "name": "Debug unit tests in executable 'fltr'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=mixtral",
-                    "--package=mixtral"
+                    "--bin=fltr",
+                    "--package=fltr"
                 ],
                 "filter": {
-                    "name": "mixtral",
+                    "name": "fltr",
                     "kind": "bin"
                 }
             },
