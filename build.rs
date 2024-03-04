@@ -8,6 +8,7 @@ fn main() {
             .cuda(true)
             .file("src/kernels.cu")
             .compile("kernels");
-        println!("cargo:rustc-link-lib=cublas");
+        println!("cargo:rustc-link-lib=static=cublas_static");
+        println!("cargo:rustc-link-lib=static=cublasLt_static");
     }
 }
