@@ -7,11 +7,11 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, subcommand_negates_reqs = true)]
 struct Args {
-    #[arg(long)]
+    #[arg(long, required = true)]
     file: Option<String>,
-    #[arg(long)]
+    #[arg(long, required = true)]
     prompt: Option<String>,
     #[arg(long, default_value = "/usr/share/fltr")]
     weights: Option<String>,
@@ -26,9 +26,9 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     Generate {
-        #[arg(long)]
+        #[arg(long, default_value = "/usr/share/fltr")]
         weights: String,
-        #[arg(long, value_delimiter = ',')]
+        #[arg(long, value_delimiter = ',', required = true)]
         prompts: Vec<String>,
         #[arg(long, default_value_t = 256)]
         length: usize,
