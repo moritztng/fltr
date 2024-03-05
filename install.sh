@@ -10,6 +10,6 @@ fi
 INSTALL_DIR=~/Fltr
 mkdir "$INSTALL_DIR"
 curl -sSL https://github.com/moritztng/fltr/releases/download/v0.1-alpha/fltr-0.1-x86_64-${processor}.gz | gunzip > "$INSTALL_DIR/fltr"
-curl -L https://huggingface.co/moritztng/Mixtral-8x7B-Instruct-v0.1/resolve/main/{weights.bin,tokenizer.json} --create-dirs -o "$INSTALL_DIR/weights.bin" -o "$INSTALL_DIR/tokenizer.json"
+curl -L https://huggingface.co/moritztng/Mixtral-8x7B-Instruct-v0.1/resolve/main/{weights.bin,tokenizer.json} -o "$INSTALL_DIR/weights.bin" -o "$INSTALL_DIR/tokenizer.json"
 chmod +x "$INSTALL_DIR/fltr"
 echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> ~/.bashrc
