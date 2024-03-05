@@ -1,9 +1,7 @@
 use clap::{Parser, Subcommand};
 use fltr::Model;
 use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::Path,
+    env, fs::File, io::{BufRead, BufReader}, path::Path
 };
 
 #[derive(Parser)]
@@ -13,8 +11,6 @@ struct Args {
     file: Option<String>,
     #[arg(long, required = true)]
     prompt: Option<String>,
-    #[arg(long, default_value = "~/Fltr")]
-    weights: Option<String>,
     #[arg(long, default_value = "32")]
     batch_size: Option<usize>,
     #[arg(long)]
@@ -26,8 +22,6 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     Generate {
-        #[arg(long, default_value = "~/Fltr")]
-        weights: String,
         #[arg(long, value_delimiter = ',', required = true)]
         prompts: Vec<String>,
         #[arg(long, default_value_t = 256)]
@@ -39,17 +33,17 @@ enum Commands {
 
 fn main() {
     let args = Args::parse();
+    let model_path = Path::new(&env::var_os("HOME").unwrap()).join(Path::new("Fltr"));
     if let Some(Commands::Generate {
-        weights,
         prompts,
         length,
         autostop,
     }) = args.command
     {
-        let mut model = Model::from_dir(Path::new(&weights));
+        let mut model = Model::from_dir(model_path.as_path());
         model.generate(&prompts, length - 1, true, autostop, None);
     } else {
-        let mut model = Model::from_dir(Path::new(&args.weights.unwrap()));
+        let mut model = Model::from_dir(model_path.as_path());
         let (cache, _) = model.generate(
             &[format!("[INST] {}", args.prompt.unwrap())],
             0,
