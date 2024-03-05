@@ -1,5 +1,6 @@
 [package]
 name = "fltr"
+description = "Like grep but for natural language questions. Based on Mixtral 8x7B."
 version = "0.1.0"
 edition = "2021"
 

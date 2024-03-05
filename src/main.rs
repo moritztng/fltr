@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None, subcommand_negates_reqs = true)]
+#[command(about, version, author, subcommand_negates_reqs = true)]
 struct Args {
     #[arg(long, required = true)]
     file: Option<String>,
@@ -15,7 +15,7 @@ struct Args {
     prompt: Option<String>,
     #[arg(long, default_value = "/usr/share/fltr")]
     weights: Option<String>,
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "32")]
     batch_size: Option<usize>,
     #[arg(long)]
     debug: bool,
