@@ -2,7 +2,7 @@ Like grep but for natural language questions. Based on Mixtral 8x7B.
 
 # Installation
 ```bash
-curl -sSL https://raw.githubusercontent.com/moritztng/fltr/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/moritztng/fltr/main/install.sh | sudo bash
 ```
 
 # Quickstart
