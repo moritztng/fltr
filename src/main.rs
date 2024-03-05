@@ -13,7 +13,7 @@ struct Args {
     file: Option<String>,
     #[arg(long, required = true)]
     prompt: Option<String>,
-    #[arg(long, default_value = "/usr/share/fltr")]
+    #[arg(long, default_value = "~/Fltr")]
     weights: Option<String>,
     #[arg(long, default_value = "32")]
     batch_size: Option<usize>,
@@ -26,7 +26,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Commands {
     Generate {
-        #[arg(long, default_value = "/usr/share/fltr")]
+        #[arg(long, default_value = "~/Fltr")]
         weights: String,
         #[arg(long, value_delimiter = ',', required = true)]
         prompts: Vec<String>,
