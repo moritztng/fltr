@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 use fltr::Model;
 use std::{
-    env, fs::File, io::{BufRead, BufReader}, path::Path
+    env,
+    fs::File,
+    io::{BufRead, BufReader},
+    path::Path,
 };
 
 #[derive(Parser)]
@@ -33,17 +36,18 @@ enum Commands {
 
 fn main() {
     let args = Args::parse();
-    let model_path = Path::new(&env::var_os("HOME").unwrap()).join(Path::new("Fltr"));
+    let model_path = Path::new(&env::var("HOME").unwrap()).join("Fltr");
+    let model_path = model_path.as_path();
     if let Some(Commands::Generate {
         prompts,
         length,
         autostop,
     }) = args.command
     {
-        let mut model = Model::from_dir(model_path.as_path());
+        let mut model = Model::from_dir(model_path);
         model.generate(&prompts, length - 1, true, autostop, None);
     } else {
-        let mut model = Model::from_dir(model_path.as_path());
+        let mut model = Model::from_dir(model_path);
         let (cache, _) = model.generate(
             &[format!("[INST] {}", args.prompt.unwrap())],
             0,
