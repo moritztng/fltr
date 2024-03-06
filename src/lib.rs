@@ -170,7 +170,6 @@ fn transpose<A: Copy>(out: &mut [A], x: &[A], dim: usize) {
 }
 
 fn matmul<const N: usize, const B: usize>(out: &mut [f32], a: &QuantizedSlice, b: &QuantizedSlice) {
-    let batch_size = a.values.len() / N;
     let mut out_t = vec![0f32; out.len()];
     #[cfg(feature = "cuda")]
     unsafe {
@@ -187,32 +186,35 @@ fn matmul<const N: usize, const B: usize>(out: &mut [f32], a: &QuantizedSlice, b
         );
     };
     #[cfg(not(feature = "cuda"))]
-    out_t
-        .par_chunks_exact_mut(batch_size)
-        .zip_eq(b.values.par_chunks_exact(N))
-        .zip_eq(b.scales.par_chunks_exact(N / Q_GROUP_SIZE))
-        .for_each(|((out_column, b_column), b_column_scales)| {
-            for ((out_x, a_row), a_row_scales) in out_column
-                .iter_mut()
-                .zip(a.values.chunks_exact(N))
-                .zip(a.scales.chunks_exact(N / Q_GROUP_SIZE))
-            {
-                let mut x = 0f32;
-                for (((a_group, b_group), a_scale), b_scale) in a_row
-                    .chunks_exact(Q_GROUP_SIZE)
-                    .zip(b_column.chunks_exact(Q_GROUP_SIZE))
-                    .zip(a_row_scales.iter())
-                    .zip(b_column_scales.iter())
+    {
+        let batch_size = a.values.len() / N;
+        out_t
+            .par_chunks_exact_mut(batch_size)
+            .zip_eq(b.values.par_chunks_exact(N))
+            .zip_eq(b.scales.par_chunks_exact(N / Q_GROUP_SIZE))
+            .for_each(|((out_column, b_column), b_column_scales)| {
+                for ((out_x, a_row), a_row_scales) in out_column
+                    .iter_mut()
+                    .zip(a.values.chunks_exact(N))
+                    .zip(a.scales.chunks_exact(N / Q_GROUP_SIZE))
                 {
-                    let mut gx = 0i32;
-                    for (a_x, b_x) in a_group.iter().zip(b_group.iter()) {
-                        gx += *a_x as i32 * *b_x as i32;
+                    let mut x = 0f32;
+                    for (((a_group, b_group), a_scale), b_scale) in a_row
+                        .chunks_exact(Q_GROUP_SIZE)
+                        .zip(b_column.chunks_exact(Q_GROUP_SIZE))
+                        .zip(a_row_scales.iter())
+                        .zip(b_column_scales.iter())
+                    {
+                        let mut gx = 0i32;
+                        for (a_x, b_x) in a_group.iter().zip(b_group.iter()) {
+                            gx += *a_x as i32 * *b_x as i32;
+                        }
+                        x += gx as f32 * a_scale * b_scale;
                     }
-                    x += gx as f32 * a_scale * b_scale;
+                    *out_x = x;
                 }
-                *out_x = x;
-            }
-        });
+            });
+    }
     transpose(out, &out_t, B);
 }
 
@@ -665,8 +667,14 @@ impl Model {
         let n_tokens = tokens.len();
         let mut cache = if let Some(cache) = cache {
             let mut new_cache = Cache {
-                key: vec![0f32;  N_LAYERS * (n_tokens + n_prompts * (cache.lengths[0] + steps)) * KV_DIM],
-                value: vec![0f32; N_LAYERS * (n_tokens + n_prompts * (cache.lengths[0] + steps)) * KV_DIM],
+                key: vec![
+                    0f32;
+                    N_LAYERS * (n_tokens + n_prompts * (cache.lengths[0] + steps)) * KV_DIM
+                ],
+                value: vec![
+                    0f32;
+                    N_LAYERS * (n_tokens + n_prompts * (cache.lengths[0] + steps)) * KV_DIM
+                ],
                 lengths: vec![cache.lengths[0]; n_prompts],
             };
             let layer_size = cache.key.len() / N_LAYERS;
@@ -696,7 +704,13 @@ impl Model {
             }
         };
 
-        let max_prompt_len = cache.lengths.iter().zip(prompt_lens.iter()).map(|(x, y)| x + y).max().unwrap();
+        let max_prompt_len = cache
+            .lengths
+            .iter()
+            .zip(prompt_lens.iter())
+            .map(|(x, y)| x + y)
+            .max()
+            .unwrap();
         let mut buffer = Buffer::new(n_tokens, max_prompt_len);
         let mut start_time = Instant::now();
         self.forward(&tokens, &prompt_lens, &mut buffer, &mut cache);
@@ -733,17 +747,12 @@ impl Model {
         start_time = Instant::now();
         for _ in 0..steps {
             let last_tokens = &output_tokens[output_tokens.len() - n_prompts..];
-            
+
             if autostop && last_tokens.contains(&2) {
                 break;
             }
 
-            self.forward(
-                last_tokens,
-                &vec![1; n_prompts],
-                &mut buffer,
-                &mut cache,
-            );
+            self.forward(last_tokens, &vec![1; n_prompts], &mut buffer, &mut cache);
             for logits in buffer.logits.chunks_exact(VOCAB_SIZE) {
                 let token = logits
                     .iter()
