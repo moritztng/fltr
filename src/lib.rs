@@ -77,7 +77,7 @@ struct Layer {
     heads: QuantizedSlice<'static>,
     rms_attention: &'static [f32],
     rms_feedforward: &'static [f32],
-    gate: QuantizedSlice<'static>,
+    gate: Option<QuantizedSlice<'static>>,
     experts: Vec<Expert>,
 }
 
@@ -304,13 +304,13 @@ fn cache_kv(cache: &mut [f32], kv: &[f32], cache_lens: &[usize], kv_lens: &[usiz
 }
 
 impl Model {
-    pub fn from_dir(path: &Path) -> Model {
+    pub fn from_dir(path: &Path, multiple_experts: bool) -> Model {
         #[cfg(feature = "cuda")]
         unsafe {
             cuda_init()
         };
         let mmap: MmapRaw = MmapOptions::new()
-            .map_raw_read_only(&File::open(path.join("weights.bin")).unwrap())
+            .map_raw_read_only(&File::open(path.join(format!("{}.bin", if multiple_experts {"large"} else {"small"}))).unwrap())
             .unwrap();
         let mut weights_ptr = mmap.as_ptr() as *const u8;
         let rms_final = ptr_to_slice::<DIM>(&mut weights_ptr);
@@ -328,9 +328,15 @@ impl Model {
             let value =
                 QuantizedSlice::from_ptr::<{ DIM * N_KV_HEADS * HEAD_SIZE }>(&mut weights_ptr);
             let heads = QuantizedSlice::from_ptr::<{ DIM * DIM }>(&mut weights_ptr);
-            let gate = QuantizedSlice::from_ptr::<{ DIM * N_EXPERTS }>(&mut weights_ptr);
+            let gate = if multiple_experts {
+                Some(QuantizedSlice::from_ptr::<{ DIM * N_EXPERTS }>(
+                    &mut weights_ptr,
+                ))
+            } else {
+                None
+            };
             let mut experts = Vec::new();
-            for _ in 0..N_EXPERTS {
+            for _ in 0..(if multiple_experts { N_EXPERTS } else { 1 }) {
                 experts.push(Expert {
                     ff1: QuantizedSlice::from_ptr::<{ DIM * HIDDEN_DIM }>(&mut weights_ptr),
                     ff2: QuantizedSlice::from_ptr::<{ HIDDEN_DIM * DIM }>(&mut weights_ptr),
@@ -537,91 +543,109 @@ impl Model {
                 &weights.rms_feedforward,
                 DIM,
             );
-
+            
             quantize(&mut buffer.qstate, &buffer.state2);
-            matmul::<DIM, N_EXPERTS>(
-                &mut buffer.expert_logits,
-                &buffer.qstate.slice_full(),
-                &weights.gate,
-            );
-
-            let mut expert_tokens: [Vec<(usize, f32)>; 8] = Default::default();
-            for (p, token_expert_logits) in
-                buffer.expert_logits.chunks_exact_mut(N_EXPERTS).enumerate()
-            {
-                let mut indices_logits: Vec<_> = token_expert_logits.iter().enumerate().collect();
-                indices_logits
-                    .sort_unstable_by(|(_, logit1), (_, logit2)| logit2.total_cmp(logit1));
-                let (expert_indices, mut expert_weights): (Vec<_>, Vec<_>) =
-                    indices_logits.into_iter().take(N_EXPERTS_PER_TOKEN).unzip();
-                softmax(&mut expert_weights);
-                for (expert_index, expert_weight) in
-                    expert_indices.iter().zip(expert_weights.iter())
+            if let Some(gate_weights) = &weights.gate {
+                matmul::<DIM, N_EXPERTS>(
+                    &mut buffer.expert_logits,
+                    &buffer.qstate.slice_full(),
+                    gate_weights,
+                );
+                let mut expert_tokens: [Vec<(usize, f32)>; 8] = Default::default();
+                for (p, token_expert_logits) in
+                    buffer.expert_logits.chunks_exact_mut(N_EXPERTS).enumerate()
                 {
-                    expert_tokens[*expert_index].push((p, *expert_weight));
+                    let mut indices_logits: Vec<_> =
+                        token_expert_logits.iter().enumerate().collect();
+                    indices_logits
+                        .sort_unstable_by(|(_, logit1), (_, logit2)| logit2.total_cmp(logit1));
+                    let (expert_indices, mut expert_weights): (Vec<_>, Vec<_>) =
+                        indices_logits.into_iter().take(N_EXPERTS_PER_TOKEN).unzip();
+                    softmax(&mut expert_weights);
+                    for (expert_index, expert_weight) in
+                        expert_indices.iter().zip(expert_weights.iter())
+                    {
+                        expert_tokens[*expert_index].push((p, *expert_weight));
+                    }
                 }
-            }
 
-            for (expert_index, token_weights) in expert_tokens.iter().enumerate() {
-                if token_weights.is_empty() {
-                    continue;
-                }
+                for (expert_index, token_weights) in expert_tokens.iter().enumerate() {
+                    if token_weights.is_empty() {
+                        continue;
+                    }
 
-                let expert = &weights.experts[expert_index];
-                let n_tokens = token_weights.len();
-                let expert_qstate = buffer.qstate2.slice_mut(0, n_tokens * DIM);
-                for ((state_values, state_scales), (token_index, _)) in expert_qstate
-                    .values
-                    .chunks_exact_mut(DIM)
-                    .zip(expert_qstate.scales.chunks_exact_mut(DIM / Q_GROUP_SIZE))
-                    .zip(token_weights.iter())
-                {
-                    state_values.copy_from_slice(
-                        &buffer
-                            .qstate
-                            .values
-                            .chunks_exact(DIM)
-                            .nth(*token_index)
-                            .unwrap(),
+                    let expert = &weights.experts[expert_index];
+                    let n_tokens = token_weights.len();
+                    let expert_qstate = buffer.qstate2.slice_mut(0, n_tokens * DIM);
+                    for ((state_values, state_scales), (token_index, _)) in expert_qstate
+                        .values
+                        .chunks_exact_mut(DIM)
+                        .zip(expert_qstate.scales.chunks_exact_mut(DIM / Q_GROUP_SIZE))
+                        .zip(token_weights.iter())
+                    {
+                        state_values.copy_from_slice(
+                            &buffer
+                                .qstate
+                                .values
+                                .chunks_exact(DIM)
+                                .nth(*token_index)
+                                .unwrap(),
+                        );
+                        state_scales.copy_from_slice(
+                            &buffer
+                                .qstate
+                                .scales
+                                .chunks_exact(DIM / Q_GROUP_SIZE)
+                                .nth(*token_index)
+                                .unwrap(),
+                        );
+                    }
+                    let expert_qstate = buffer.qstate2.slice(0, n_tokens * DIM);
+                    let expert_ff_hidden = &mut buffer.ff_hidden[..n_tokens * HIDDEN_DIM];
+                    let expert_swiglu = &mut buffer.swiglu[..n_tokens * HIDDEN_DIM];
+                    matmul::<DIM, HIDDEN_DIM>(expert_ff_hidden, &expert_qstate, &expert.ff1);
+                    matmul::<DIM, HIDDEN_DIM>(expert_swiglu, &expert_qstate, &expert.swiglu);
+                    for (hidden_x, swiglu_x) in
+                        expert_ff_hidden.iter_mut().zip(expert_swiglu.iter())
+                    {
+                        *hidden_x *= 1f32 / (1f32 + (-*hidden_x).exp());
+                        *hidden_x *= swiglu_x;
+                    }
+                    quantize(&mut buffer.qhidden, &expert_ff_hidden);
+                    matmul::<HIDDEN_DIM, DIM>(
+                        &mut buffer.state2[..n_tokens * DIM],
+                        &buffer.qhidden.slice(0, n_tokens * HIDDEN_DIM),
+                        &expert.ff2,
                     );
-                    state_scales.copy_from_slice(
-                        &buffer
-                            .qstate
-                            .scales
-                            .chunks_exact(DIM / Q_GROUP_SIZE)
-                            .nth(*token_index)
-                            .unwrap(),
-                    );
+                    for (token_state, (token_index, weight)) in buffer.state2[..n_tokens * DIM]
+                        .chunks_exact_mut(DIM)
+                        .zip(token_weights.iter())
+                    {
+                        smul(token_state, *weight);
+                        add(
+                            &mut buffer
+                                .state
+                                .chunks_exact_mut(DIM)
+                                .nth(*token_index)
+                                .unwrap(),
+                            token_state,
+                        );
+                    }
                 }
-                let expert_qstate = buffer.qstate2.slice(0, n_tokens * DIM);
-                let expert_ff_hidden = &mut buffer.ff_hidden[..n_tokens * HIDDEN_DIM];
-                let expert_swiglu = &mut buffer.swiglu[..n_tokens * HIDDEN_DIM];
-                matmul::<DIM, HIDDEN_DIM>(expert_ff_hidden, &expert_qstate, &expert.ff1);
-                matmul::<DIM, HIDDEN_DIM>(expert_swiglu, &expert_qstate, &expert.swiglu);
-                for (hidden_x, swiglu_x) in expert_ff_hidden.iter_mut().zip(expert_swiglu.iter()) {
+            } else {
+                matmul::<DIM, HIDDEN_DIM>(&mut buffer.ff_hidden, &buffer.qstate.slice_full(), &weights.experts[0].ff1);
+                matmul::<DIM, HIDDEN_DIM>(&mut buffer.swiglu, &buffer.qstate.slice_full(), &weights.experts[0].swiglu);
+                for (hidden_x, swiglu_x) in buffer.ff_hidden.iter_mut().zip(buffer.swiglu.iter()) {
                     *hidden_x *= 1f32 / (1f32 + (-*hidden_x).exp());
                     *hidden_x *= swiglu_x;
                 }
-                quantize(&mut buffer.qhidden, &expert_ff_hidden);
+                quantize(&mut buffer.qhidden, &buffer.ff_hidden);
                 matmul::<HIDDEN_DIM, DIM>(
-                    &mut buffer.state2[..n_tokens * DIM],
-                    &buffer.qhidden.slice(0, n_tokens * HIDDEN_DIM),
-                    &expert.ff2,
+                    &mut buffer.state2,
+                    &buffer.qhidden.slice_full(),
+                    &weights.experts[0].ff2,
                 );
-                for (token_state, (token_index, weight)) in buffer.state2[..n_tokens * DIM]
-                    .chunks_exact_mut(DIM)
-                    .zip(token_weights.iter())
-                {
-                    smul(token_state, *weight);
-                    add(
-                        &mut buffer
-                            .state
-                            .chunks_exact_mut(DIM)
-                            .nth(*token_index)
-                            .unwrap(),
-                        token_state,
-                    );
-                }
+                add(&mut buffer.state, &buffer.state2);
             }
         }
 

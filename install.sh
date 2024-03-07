@@ -10,7 +10,15 @@ fi
 INSTALL_DIR=~/Fltr
 mkdir -p "$INSTALL_DIR"
 curl -sSL https://github.com/moritztng/fltr/releases/download/v0.1-alpha/fltr-0.1-x86_64-${processor}.gz | gunzip > "$INSTALL_DIR/fltr"
-curl -L https://huggingface.co/moritztng/Mixtral-8x7B-Instruct-v0.1/resolve/main/{weights.bin,tokenizer.json} -o "$INSTALL_DIR/weights.bin" -o "$INSTALL_DIR/tokenizer.json"
+
+MODEL_URL=https://huggingface.co/moritztng/fltr/resolve/main
+curl -L "$MODEL_URL/tokenizer.json" -o "$INSTALL_DIR/tokenizer.json"
+if [[ ",$1," == *",small,"* ]]; then
+    curl -L "$MODEL_URL/mistral-7b-instruct-v0.2.bin" -o "$INSTALL_DIR/small.bin"
+fi
+if [[ ",$1," == *",large,"* ]]; then
+    curl -L "$MODEL_URL/mixtral-8x7b-instruct-v0.1.bin" -o "$INSTALL_DIR/large.bin"
+fi
 chmod +x "$INSTALL_DIR/fltr"
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then

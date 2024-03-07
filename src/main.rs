@@ -17,6 +17,8 @@ struct Args {
     #[arg(long, default_value = "32")]
     batch_size: Option<usize>,
     #[arg(long)]
+    large: bool,
+    #[arg(long)]
     debug: bool,
     #[command(subcommand)]
     command: Option<Commands>,
@@ -44,10 +46,10 @@ fn main() {
         autostop,
     }) = args.command
     {
-        let mut model = Model::from_dir(model_path);
+        let mut model = Model::from_dir(model_path, args.large);
         model.generate(&prompts, length - 1, true, autostop, None);
     } else {
-        let mut model = Model::from_dir(model_path);
+        let mut model = Model::from_dir(model_path, args.large);
         let (cache, _) = model.generate(
             &[format!("[INST] {}", args.prompt.unwrap())],
             0,
