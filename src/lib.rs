@@ -11,7 +11,6 @@ use std::{
 use tokenizers::tokenizer::Tokenizer;
 
 const VOCAB_SIZE: usize = 32000;
-const N_LAYERS: usize = 32;
 const N_KV_HEADS: usize = 8;
 const N_HEADS: usize = 32;
 const HEAD_SIZE: usize = 128;
@@ -88,19 +87,14 @@ struct Weights {
     output: QuantizedSlice<'static>,
 }
 
-pub struct Cache {
-    key: Vec<f32>,
-    value: Vec<f32>,
-    lengths: Vec<usize>,
-}
-
 struct Buffer {
     state: Vec<f32>,
     state2: Vec<f32>,
     qstate: QuantizedVector,
     qstate2: QuantizedVector,
     query: Vec<f32>,
-    key_value: Vec<f32>,
+    key: Vec<f32>,
+    value: Vec<f32>,
     attention: Vec<f32>,
     swiglu: Vec<f32>,
     ff_hidden: Vec<f32>,
@@ -264,42 +258,31 @@ fn ptr_to_slice<const A: usize>(ptr: &mut *const u8) -> &'static [f32] {
 }
 
 impl Buffer {
-    fn new(batch_size: usize, max_prompt_len: usize) -> Buffer {
+    fn new(n_tokens: usize, max_prompt_len: usize) -> Buffer {
         Buffer {
-            state: vec![0f32; batch_size * DIM],
-            state2: vec![0f32; batch_size * DIM],
+            state: vec![0f32; n_tokens * DIM],
+            state2: vec![0f32; n_tokens * DIM],
             qstate: QuantizedVector {
-                values: vec![0i8; batch_size * DIM],
-                scales: vec![0f32; batch_size * (DIM / Q_GROUP_SIZE)],
+                values: vec![0i8; n_tokens * DIM],
+                scales: vec![0f32; n_tokens * (DIM / Q_GROUP_SIZE)],
             },
             qstate2: QuantizedVector {
-                values: vec![0i8; batch_size * DIM],
-                scales: vec![0f32; batch_size * (DIM / Q_GROUP_SIZE)],
+                values: vec![0i8; n_tokens * DIM],
+                scales: vec![0f32; n_tokens * (DIM / Q_GROUP_SIZE)],
             },
-            query: vec![0f32; batch_size * DIM],
-            key_value: vec![0f32; batch_size * KV_DIM],
+            query: vec![0f32; n_tokens * DIM],
+            key: vec![0f32; n_tokens * KV_DIM],
+            value: vec![0f32; n_tokens * KV_DIM],
             attention: vec![0f32; max_prompt_len],
-            swiglu: vec![0f32; batch_size * HIDDEN_DIM],
-            ff_hidden: vec![0f32; batch_size * HIDDEN_DIM],
+            swiglu: vec![0f32; n_tokens * HIDDEN_DIM],
+            ff_hidden: vec![0f32; n_tokens * HIDDEN_DIM],
             qhidden: QuantizedVector {
-                values: vec![0i8; batch_size * HIDDEN_DIM],
-                scales: vec![0f32; batch_size * (HIDDEN_DIM / Q_GROUP_SIZE)],
+                values: vec![0i8; n_tokens * HIDDEN_DIM],
+                scales: vec![0f32; n_tokens * (HIDDEN_DIM / Q_GROUP_SIZE)],
             },
-            expert_logits: vec![0f32; batch_size * N_EXPERTS],
-            logits: vec![0f32; batch_size * VOCAB_SIZE],
+            expert_logits: vec![0f32; n_tokens * N_EXPERTS],
+            logits: vec![0f32; n_tokens * VOCAB_SIZE],
         }
-    }
-}
-
-fn cache_kv(cache: &mut [f32], kv: &[f32], cache_lens: &[usize], kv_lens: &[usize]) {
-    let mut i_cache = 0;
-    let mut i_kv = 0;
-    for (cache_len, kv_len) in cache_lens.iter().zip(kv_lens) {
-        i_cache += *cache_len * KV_DIM;
-        cache[i_cache..i_cache + kv_len * KV_DIM]
-            .copy_from_slice(&kv[i_kv..i_kv + kv_len * KV_DIM]);
-        i_cache += kv_len * KV_DIM;
-        i_kv += kv_len * KV_DIM;
     }
 }
 
@@ -310,7 +293,13 @@ impl Model {
             cuda_init()
         };
         let mmap: MmapRaw = MmapOptions::new()
-            .map_raw_read_only(&File::open(path.join(format!("{}.bin", if multiple_experts {"large"} else {"small"}))).unwrap())
+            .map_raw_read_only(
+                &File::open(path.join(format!(
+                    "{}.bin",
+                    if multiple_experts { "large" } else { "small" }
+                )))
+                .unwrap(),
+            )
             .unwrap();
         let mut weights_ptr = mmap.as_ptr() as *const u8;
         let rms_final = ptr_to_slice::<DIM>(&mut weights_ptr);
@@ -368,13 +357,7 @@ impl Model {
         }
     }
 
-    fn forward(
-        &mut self,
-        tokens: &[u32],
-        prompt_lens: &[usize],
-        buffer: &mut Buffer,
-        cache: &mut Cache,
-    ) {
+    fn forward(&mut self, tokens: &[u32], prompt_lens: &[usize], buffer: &mut Buffer) {
         for (state, token) in buffer
             .state
             .chunks_exact_mut(DIM)
@@ -390,14 +373,7 @@ impl Model {
             );
         }
 
-        let layer_size = cache.key.len() / N_LAYERS;
-        for ((weights, layer_key_cache), layer_value_cache) in self
-            .weights
-            .layers
-            .iter()
-            .zip(cache.key.chunks_exact_mut(layer_size))
-            .zip(cache.value.chunks_exact_mut(layer_size))
-        {
+        for weights in self.weights.layers.iter() {
             rmsnorm(
                 &mut buffer.state2,
                 &buffer.state,
@@ -408,31 +384,18 @@ impl Model {
             quantize(&mut buffer.qstate, &buffer.state2);
             let qstate_tensor = buffer.qstate.slice_full();
             matmul::<DIM, DIM>(&mut buffer.query, &qstate_tensor, &weights.query);
-            matmul::<DIM, KV_DIM>(&mut buffer.key_value, &qstate_tensor, &weights.key);
-            cache_kv(
-                layer_key_cache,
-                &buffer.key_value,
-                &cache.lengths,
-                prompt_lens,
-            );
-            matmul::<DIM, KV_DIM>(&mut buffer.key_value, &qstate_tensor, &weights.value);
-            cache_kv(
-                layer_value_cache,
-                &buffer.key_value,
-                &cache.lengths,
-                prompt_lens,
-            );
+            matmul::<DIM, KV_DIM>(&mut buffer.key, &qstate_tensor, &weights.key);
+            matmul::<DIM, KV_DIM>(&mut buffer.value, &qstate_tensor, &weights.value);
 
             let mut i_prompt_query = 0;
             let mut i_prompt_key = 0;
-            for (prompt_len, prompt_len_cache) in prompt_lens.iter().zip(cache.lengths.iter()) {
-                i_prompt_key += prompt_len_cache * KV_DIM;
-                for ((p, token_query), token_key_cache) in buffer.query
+            for prompt_len in prompt_lens.iter() {
+                for ((p, token_query), token_key) in buffer.query
                     [i_prompt_query..i_prompt_query + prompt_len * DIM]
                     .chunks_exact_mut(DIM)
                     .enumerate()
                     .zip(
-                        layer_key_cache[i_prompt_key..i_prompt_key + prompt_len * KV_DIM]
+                        buffer.key[i_prompt_key..i_prompt_key + prompt_len * KV_DIM]
                             .chunks_exact_mut(KV_DIM),
                     )
                 {
@@ -440,7 +403,7 @@ impl Model {
                     let mut fcis = [0f32; HEAD_SIZE];
                     for (i, (fcr, fci)) in fcrs.iter_mut().zip(fcis.iter_mut()).enumerate() {
                         let frequency = 1f32 / 1000000f32.powf((i * 2) as f32 / HEAD_SIZE as f32);
-                        let value = (prompt_len_cache + p) as f32 * frequency;
+                        let value = p as f32 * frequency;
                         *fcr = value.cos();
                         *fci = value.sin();
                     }
@@ -456,7 +419,7 @@ impl Model {
                             ]);
                         }
                     }
-                    for key_head in token_key_cache.chunks_exact_mut(HEAD_SIZE) {
+                    for key_head in token_key.chunks_exact_mut(HEAD_SIZE) {
                         for ((key_pair, fcr), fci) in key_head
                             .chunks_exact_mut(2)
                             .zip(fcrs.iter())
@@ -475,8 +438,8 @@ impl Model {
 
             buffer.state2.fill(0f32);
             let mut i_prompt_state = 0;
-            let mut i_prompt_cache = 0;
-            for (prompt_len, prompt_len_cache) in prompt_lens.iter().zip(cache.lengths.iter()) {
+            let mut i_prompt_kv = 0;
+            for prompt_len in prompt_lens.iter() {
                 for ((p, token_state), token_query) in buffer.state2
                     [i_prompt_state..i_prompt_state + prompt_len * DIM]
                     .chunks_exact_mut(DIM)
@@ -486,7 +449,7 @@ impl Model {
                             .chunks_exact(DIM),
                     )
                 {
-                    let pos = prompt_len_cache + p;
+                    let pos = p;
                     for (h, (state_head, query_head)) in token_state
                         .chunks_exact_mut(HEAD_SIZE)
                         .zip(token_query.chunks_exact(HEAD_SIZE))
@@ -495,8 +458,7 @@ impl Model {
                         let offset = h * N_KV_HEADS / N_HEADS * HEAD_SIZE;
                         for (attention_x, pos_key_cache) in
                             buffer.attention[0..=pos].iter_mut().zip(
-                                layer_key_cache[i_prompt_cache
-                                    ..i_prompt_cache + (prompt_len_cache + prompt_len) * KV_DIM]
+                                buffer.key[i_prompt_kv..i_prompt_kv + prompt_len * KV_DIM]
                                     .chunks_exact(KV_DIM),
                             )
                         {
@@ -512,8 +474,7 @@ impl Model {
                         smul(&mut buffer.attention, 1f32 / (HEAD_SIZE as f32).sqrt());
                         softmax(&mut buffer.attention[..=pos]);
                         for (attention_x, pos_value_cache) in buffer.attention[0..=pos].iter().zip(
-                            layer_value_cache[i_prompt_cache
-                                ..i_prompt_cache + (prompt_len_cache + prompt_len) * KV_DIM]
+                            buffer.value[i_prompt_kv..i_prompt_kv + prompt_len * KV_DIM]
                                 .chunks_exact(KV_DIM),
                         ) {
                             for (state_x, value_x) in state_head
@@ -526,7 +487,7 @@ impl Model {
                     }
                 }
                 i_prompt_state += prompt_len * DIM;
-                i_prompt_cache += (prompt_len_cache + prompt_len) * KV_DIM;
+                i_prompt_kv += prompt_len * KV_DIM;
             }
 
             quantize(&mut buffer.qstate, &buffer.state2);
@@ -543,7 +504,7 @@ impl Model {
                 &weights.rms_feedforward,
                 DIM,
             );
-            
+
             quantize(&mut buffer.qstate, &buffer.state2);
             if let Some(gate_weights) = &weights.gate {
                 matmul::<DIM, N_EXPERTS>(
@@ -633,8 +594,16 @@ impl Model {
                     }
                 }
             } else {
-                matmul::<DIM, HIDDEN_DIM>(&mut buffer.ff_hidden, &buffer.qstate.slice_full(), &weights.experts[0].ff1);
-                matmul::<DIM, HIDDEN_DIM>(&mut buffer.swiglu, &buffer.qstate.slice_full(), &weights.experts[0].swiglu);
+                matmul::<DIM, HIDDEN_DIM>(
+                    &mut buffer.ff_hidden,
+                    &buffer.qstate.slice_full(),
+                    &weights.experts[0].ff1,
+                );
+                matmul::<DIM, HIDDEN_DIM>(
+                    &mut buffer.swiglu,
+                    &buffer.qstate.slice_full(),
+                    &weights.experts[0].swiglu,
+                );
                 for (hidden_x, swiglu_x) in buffer.ff_hidden.iter_mut().zip(buffer.swiglu.iter()) {
                     *hidden_x *= 1f32 / (1f32 + (-*hidden_x).exp());
                     *hidden_x *= swiglu_x;
@@ -662,86 +631,25 @@ impl Model {
             &buffer.qstate.slice_full(),
             &self.weights.output,
         );
-
-        for (prompt_len_cache, prompt_len) in cache.lengths.iter_mut().zip(prompt_lens) {
-            *prompt_len_cache += prompt_len;
-        }
     }
 
-    pub fn generate(
-        &mut self,
-        prompts: &[String],
-        steps: usize,
-        print: bool,
-        autostop: bool,
-        cache: Option<&Cache>,
-    ) -> (Cache, Vec<String>) {
+    pub fn generate(&mut self, prompts: &[String], print: bool) -> Vec<String> {
         let mut tokens = Vec::new();
         let mut prompt_lens = Vec::new();
         for prompt in prompts {
-            let prompt_tokens = self
-                .tokenizer
-                .encode(prompt.to_owned(), cache.is_none())
-                .unwrap();
+            let prompt_tokens = self.tokenizer.encode(prompt.to_owned(), true).unwrap();
             tokens.extend(prompt_tokens.get_ids());
             prompt_lens.push(prompt_tokens.len());
         }
 
-        let n_prompts = prompts.len();
-        let n_tokens = tokens.len();
-        let mut cache = if let Some(cache) = cache {
-            let mut new_cache = Cache {
-                key: vec![
-                    0f32;
-                    N_LAYERS * (n_tokens + n_prompts * (cache.lengths[0] + steps)) * KV_DIM
-                ],
-                value: vec![
-                    0f32;
-                    N_LAYERS * (n_tokens + n_prompts * (cache.lengths[0] + steps)) * KV_DIM
-                ],
-                lengths: vec![cache.lengths[0]; n_prompts],
-            };
-            let layer_size = cache.key.len() / N_LAYERS;
-            let new_layer_size = new_cache.key.len() / N_LAYERS;
-            for (((new_layer_key, new_layer_value), layer_key), layer_value) in new_cache
-                .key
-                .chunks_exact_mut(new_layer_size)
-                .zip(new_cache.value.chunks_exact_mut(new_layer_size))
-                .zip(cache.key.chunks_exact(layer_size))
-                .zip(cache.value.chunks_exact(layer_size))
-            {
-                let mut i_prompt = 0;
-                for prompt_len in prompt_lens.iter() {
-                    new_layer_key[i_prompt..i_prompt + cache.lengths[0] * KV_DIM]
-                        .copy_from_slice(&layer_key);
-                    new_layer_value[i_prompt..i_prompt + cache.lengths[0] * KV_DIM]
-                        .copy_from_slice(&layer_value);
-                    i_prompt += (cache.lengths[0] + prompt_len + steps) * KV_DIM;
-                }
-            }
-            new_cache
-        } else {
-            Cache {
-                key: vec![0f32; N_LAYERS * (n_tokens + n_prompts * steps) * KV_DIM],
-                value: vec![0f32; N_LAYERS * (n_tokens + n_prompts * steps) * KV_DIM],
-                lengths: vec![0; n_prompts],
-            }
-        };
-
-        let max_prompt_len = cache
-            .lengths
-            .iter()
-            .zip(prompt_lens.iter())
-            .map(|(x, y)| x + y)
-            .max()
-            .unwrap();
-        let mut buffer = Buffer::new(n_tokens, max_prompt_len);
-        let mut start_time = Instant::now();
-        self.forward(&tokens, &prompt_lens, &mut buffer, &mut cache);
+        let max_prompt_len = prompt_lens.iter().max().unwrap();
+        let mut buffer = Buffer::new(tokens.len(), *max_prompt_len);
+        let start_time = Instant::now();
+        self.forward(&tokens, &prompt_lens, &mut buffer);
         if print {
             print!(
-                "prompt prefill tokens/sec: {}\n{}",
-                n_tokens as f32 / start_time.elapsed().as_secs_f32(),
+                "tokens/sec: {}\n{}",
+                tokens.len() as f32 / start_time.elapsed().as_secs_f32(),
                 self.tokenizer.decode(&tokens, false).unwrap()
             );
             stdout().flush().unwrap();
@@ -756,62 +664,15 @@ impl Model {
                 .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
                 .unwrap()
                 .0 as u32;
+            let output_token = self.tokenizer.id_to_token(token).unwrap().replace("▁", "");
             if print {
-                print!(
-                    "{}",
-                    self.tokenizer.id_to_token(token).unwrap().replace("▁", " ")
-                );
+                print!("{}", output_token);
                 stdout().flush().unwrap();
             }
-            output_tokens.push(token);
+            output_tokens.push(output_token);
             i_prompt_logits += VOCAB_SIZE;
         }
 
-        buffer = Buffer::new(n_prompts, max_prompt_len + steps);
-        start_time = Instant::now();
-        for _ in 0..steps {
-            let last_tokens = &output_tokens[output_tokens.len() - n_prompts..];
-
-            if autostop && last_tokens.contains(&2) {
-                break;
-            }
-
-            self.forward(last_tokens, &vec![1; n_prompts], &mut buffer, &mut cache);
-            for logits in buffer.logits.chunks_exact(VOCAB_SIZE) {
-                let token = logits
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, logit1), (_, logit2)| logit1.total_cmp(&logit2))
-                    .unwrap()
-                    .0 as u32;
-                if print {
-                    print!(
-                        "{}",
-                        self.tokenizer.id_to_token(token).unwrap().replace("▁", " ")
-                    );
-                    stdout().flush().unwrap();
-                }
-                output_tokens.push(token);
-            }
-        }
-
-        if print {
-            if steps > 0 {
-                print!(
-                    "\ndecode tokens/sec: {}",
-                    (n_prompts * steps) as f32 / start_time.elapsed().as_secs_f32()
-                );
-            }
-            print!("\n\n");
-        }
-
-        let mut output_tokens_t = vec![0; output_tokens.len()];
-        transpose(&mut output_tokens_t, &output_tokens, steps + 1);
-        let mut output_strings = Vec::new();
-        for prompt_tokens in output_tokens_t.chunks_exact(steps + 1) {
-            output_strings.push(self.tokenizer.decode(prompt_tokens, false).unwrap())
-        }
-
-        return (cache, output_strings);
+        return output_tokens;
     }
 }
