@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["generate", "--weights=weights", "--prompt=\"Once upon a time\""],
+            "args": ["--file=test.txt", "--prompt=who", "--batch-size=2", "--debug"],
             "cwd": "${workspaceFolder}"
         },
         {
