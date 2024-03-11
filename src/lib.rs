@@ -199,13 +199,11 @@ fn smul(matrix: &mut [f32], scalar: f32) {
 fn softmax(x: &mut [f32], dim: usize) {
     for row in x.chunks_exact_mut(dim) {
         let max = *row.iter().max_by(|a, b| a.total_cmp(b)).unwrap();
-
         let mut sum = 0f32;
         for x_x in row.iter_mut() {
             *x_x = (*x_x - max).exp();
             sum += *x_x;
         }
-
         for x_x in row.iter_mut() {
             *x_x /= sum;
         }
@@ -221,7 +219,6 @@ fn add(a: &mut [f32], b: &[f32]) {
 fn rmsnorm(out: &mut [f32], x: &[f32], weights: &[f32], dim: usize) {
     for (out, x) in out.chunks_exact_mut(dim).zip(x.chunks_exact(dim)) {
         let mut rms = x.iter().fold(0f32, |acc, x| acc + x.powi(2));
-
         rms = 1f32 / (rms / dim as f32 + 1e-5).sqrt();
         for ((out_x, weights_x), x_x) in out.iter_mut().zip(weights.iter()).zip(x.iter()) {
             *out_x = weights_x * (rms * x_x);
@@ -289,7 +286,6 @@ impl Model {
                     swiglu: QuantizedSlice::from_ptr::<{ DIM * HIDDEN_DIM }>(&mut weights_ptr),
                 })
             }
-
             layers.push(Layer {
                 rms_attention,
                 rms_feedforward,
@@ -301,7 +297,6 @@ impl Model {
                 experts,
             });
         }
-
         Model {
             weights: Weights {
                 embeddings,
@@ -316,7 +311,6 @@ impl Model {
 
     fn forward(&mut self, tokens: &[u32], prompt_lens: &[usize], print: bool) -> Vec<f32> {
         let mut state = vec![0f32; tokens.len() * DIM];
-
         for (state, token) in state
             .chunks_exact_mut(DIM)
             .zip(tokens.iter().map(|&t| t as usize))
@@ -330,7 +324,6 @@ impl Model {
                     .unwrap(),
             );
         }
-
         for weights in self.weights.layers.iter() {
             print_debug("query key value", print);
             let mut state2 = vec![0f32; tokens.len() * DIM];
@@ -605,7 +598,7 @@ impl Model {
                 add(&mut state, &state2);
             }
         }
-
+        
         print_debug("logits", print);
         let mut state2 = vec![0f32; tokens.len() * DIM];
         rmsnorm(&mut state2, &state, &self.weights.rms_final, DIM);
@@ -624,7 +617,6 @@ impl Model {
             tokens.extend(prompt_tokens.get_ids());
             prompt_lens.push(prompt_tokens.len());
         }
-
         let start_time = Instant::now();
         let logits = self.forward(&tokens, &prompt_lens, print);
         if print {
@@ -653,7 +645,6 @@ impl Model {
             output_tokens.push(output_token);
             i_prompt_logits += VOCAB_SIZE;
         }
-
-        return output_tokens;
+        output_tokens
     }
 }

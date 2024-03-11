@@ -1,7 +1,7 @@
 [package]
 name = "fltr"
-description = "Like grep but for natural language questions. Based on Mixtral 8x7B."
-version = "0.1.0"
+description = "Like grep but for natural language questions. Based on Mistral 7B or 8x7B."
+version = "0.1.2"
 edition = "2021"
 
 [dependencies]
