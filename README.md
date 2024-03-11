@@ -1,4 +1,4 @@
-Like grep but for natural language questions. Based on Mistral 7B or 8x7B. ~15 tokens/s on Nvidia RTX 3070 with 8GB memory.
+Like grep but for natural language questions. Based on Mistral 7B or 8x7B. ~40 tokens/s or ~23 tokens/s on Nvidia RTX 3070 with 8GB memory.
 
 # Installation
 ## Linux x86_64

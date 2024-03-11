@@ -9,7 +9,7 @@ fi
 
 INSTALL_DIR=~/Fltr
 mkdir -p "$INSTALL_DIR"
-curl -sSL https://github.com/moritztng/fltr/releases/download/v0.1.1-alpha/fltr-0.1.1-x86_64-${processor}.gz | gunzip > "$INSTALL_DIR/fltr"
+curl -sSL https://github.com/moritztng/fltr/releases/download/v0.1.2-alpha/fltr-0.1.2-x86_64-${processor}.gz | gunzip > "$INSTALL_DIR/fltr"
 
 MODEL_URL=https://huggingface.co/moritztng/fltr/resolve/main
 curl -L "$MODEL_URL/tokenizer.json" -o "$INSTALL_DIR/tokenizer.json"
