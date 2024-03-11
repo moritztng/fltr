@@ -29,7 +29,7 @@ fn main() {
     let mut filter_batch = |batch: &Vec<String>| {
         let prompts: Vec<String> = batch
             .iter()
-            .map(|x| format!("[INST] {}{}\nAnswer: Yes or No\nAnswer:[/INST]", args.prompt.clone().unwrap(), x))
+            .map(|x| format!("[INST] {}{}\nAnswer: Yes or No\nAnswer(only yes or no):[/INST]", args.prompt.clone().unwrap(), x))
             .collect();
         batch
             .iter()
