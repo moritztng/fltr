@@ -1,4 +1,12 @@
-Like grep but for natural language questions. Based on Mistral 7B or 8x7B. ~40 tokens/s or ~23 tokens/s on Nvidia RTX 3070 with 8GB memory.
+Like grep but for natural language questions. Based on Mistral 7B or Mixtral 8x7B.
+
+Text file input tokens per second:
+- Nvidia RTX 3070 with 8GB memory
+    - Mistral 7B: **~52 tok/s**
+    - Mixtral 8x7B: **~28 tok/s**
+- Intel I5-6500 with 8GB memory
+    - Mistral 7B: **~5 tok/s**
+    - Mixtral 8x7B: **~2 tok/s**
 
 # Installation
 ## Linux (x86_64) & macOS (x86_64 & arm64)
