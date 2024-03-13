@@ -10,10 +10,10 @@ use std::{
 #[derive(Parser)]
 #[command(about, version, author)]
 struct Args {
-    #[arg(long, required = true)]
-    file: Option<String>,
-    #[arg(long, required = true)]
-    prompt: Option<String>,
+    #[arg(long)]
+    file: String,
+    #[arg(long)]
+    prompt: String,
     #[arg(long, default_value = "32")]
     batch_size: Option<usize>,
     #[arg(long)]
@@ -29,7 +29,7 @@ fn main() {
     let mut filter_batch = |batch: &Vec<String>| {
         let prompts: Vec<String> = batch
             .iter()
-            .map(|x| format!("[INST] {}{}\nAnswer: Yes or No\nAnswer:[/INST]", args.prompt.clone().unwrap(), x))
+            .map(|x| format!("[INST] {}{}\nAnswer: Yes or No\nAnswer:[/INST]", args.prompt.clone(), x))
             .collect();
         batch
             .iter()
@@ -37,7 +37,7 @@ fn main() {
             .filter(|(_, output)| output.to_lowercase() == "yes")
             .for_each(|(x, _)| println!("{}", x));
     };
-    for line in BufReader::new(File::open(args.file.unwrap()).unwrap()).lines() {
+    for line in BufReader::new(File::open(args.file).unwrap()).lines() {
         batch.push(line.unwrap());
         if batch.len() == args.batch_size.unwrap() {
             filter_batch(&batch);
